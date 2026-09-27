@@ -31,7 +31,7 @@ npm run deploy -- --factory   # 只部署新的 IdentityAccountFactory 並更新
 
 | 頁面 | 功能 | 規格章節 |
 | --- | --- | --- |
-| `/` | 開戶：建立 Passkey → OIDC nonce 綁定公鑰 → 一筆 UserOp 完成部署＋登記聊天裝置；既有帳戶登入（由簽章還原公鑰比對鏈上金鑰） | §3、§4.4 |
+| `/` | 開戶：先以 Google／Apple 建立身分（nonce 綁定一次性 ephemeral 金鑰）→ 在裝置建立 FIDO2 金鑰 → ephemeral 授權綁定，一筆 UserOp 完成部署＋登記聊天裝置；既有身分則以此裝置 Passkey 登入 | §3、§4.4 |
 | `/wallet` | TWDC 餘額、轉帳（即時預覽需要手機或卡片）、收款 QR、測試幣、額度、紀錄 | §4.3 |
 | `/card` | L2 KYC（鏈上只存 Merkle root）、申請與綁定卡片、Visa 通道、POS 刷卡模擬、清算／釋放 | §3.4、§4.5、§6.4、§9 |
 | `/agents` | AI 代理與支出通道、x402 商家購買、超額 intent 以卡片核准、撥款、撤銷 | §6 |
