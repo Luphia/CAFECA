@@ -35,7 +35,7 @@ export function Button({
       className={cx(
         "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl font-medium transition active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100",
         size === "sm" ? "h-9 px-3 text-sm" : "h-11 px-4 text-[15px]",
-        variant === "primary" && "brand-gradient text-white shadow-sm",
+        variant === "primary" && "btn-primary text-white shadow-sm",
         variant === "secondary" && "border border-line bg-surface text-ink hover:bg-surface-2",
         variant === "ghost" && "text-brand hover:bg-brand-bg",
         variant === "danger" && "bg-danger-bg text-danger hover:opacity-90",

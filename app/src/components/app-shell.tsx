@@ -6,22 +6,33 @@ import { useEffect, type ReactNode } from "react";
 import { DEPLOYMENT } from "@/lib/config";
 import { useWallet } from "./wallet-provider";
 import { CafecaTile } from "./cafeca-logo";
-import { PasskeyIcon } from "./icons";
+import { IdCardIcon, PasskeyIcon } from "./icons";
 import { Badge, Button, cx, Notice, Spinner, errMsg, useToast } from "./ui";
 
-const TABS = [
+type Tab = { href: string; label: string; icon: string };
+const LEFT: Tab[] = [
   { href: "/wallet", label: "錢包", icon: "M3 7h18v12H3zM3 7l2-3h14l2 3M16 13h2" },
   { href: "/chat", label: "聊天", icon: "M4 5h16v11H8l-4 4z" },
-  { href: "/agents", label: "AI", icon: "M12 3v3M5 9h14v10H5zM9 13h.01M15 13h.01M9 16h6" },
+];
+const RIGHT: Tab[] = [
   { href: "/card", label: "卡片", icon: "M3 6h18v12H3zM3 10h18" },
   { href: "/security", label: "安全", icon: "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" },
 ];
+
+/** 登入後的 App 使用深紫夜色主題（html.app-dark），離開 App 內頁時移除 */
+function useAppTheme() {
+  useEffect(() => {
+    document.documentElement.classList.add("app-dark");
+    return () => document.documentElement.classList.remove("app-dark");
+  }, []);
+}
 
 export function AppShell({ children, title, requireSession = true }: { children: ReactNode; title: string; requireSession?: boolean }) {
   const { wallet, hydrated, session, chain, unlock, logout } = useWallet();
   const router = useRouter();
   const path = usePathname();
   const toast = useToast();
+  useAppTheme();
 
   useEffect(() => {
     if (hydrated && !wallet) router.replace("/start");
@@ -44,8 +55,9 @@ export function AppShell({ children, title, requireSession = true }: { children:
   };
 
   return (
+    <div className="app-glow min-h-dvh">
     <div className="mx-auto flex min-h-dvh max-w-md flex-col">
-      <header className="sticky top-0 z-40 flex items-center justify-between border-b border-line bg-bg/85 px-4 py-3 backdrop-blur">
+      <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-3 backdrop-blur-md">
         <div className="flex items-center gap-2">
           <CafecaTile className="size-8" />
           <div>
@@ -103,23 +115,40 @@ export function AppShell({ children, title, requireSession = true }: { children:
         )}
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 mx-auto max-w-md border-t border-line bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
-        <ul className="grid grid-cols-5">
-          {TABS.map((t) => {
-            const active = path?.startsWith(t.href);
-            return (
-              <li key={t.href}>
-                <Link href={t.href} className={cx("flex flex-col items-center gap-0.5 py-2.5 text-[11px]", active ? "text-brand" : "text-ink-3")}>
-                  <svg viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth={active ? 2 : 1.6} strokeLinejoin="round" strokeLinecap="round">
-                    <path d={t.icon} />
-                  </svg>
-                  {t.label}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+      <nav className="fixed inset-x-0 bottom-0 z-40 mx-auto max-w-md px-3 pb-[max(env(safe-area-inset-bottom),12px)]">
+        <div className="relative grid grid-cols-5 items-end rounded-[26px] border border-line bg-surface/90 shadow-[0_-8px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur-xl">
+          {LEFT.map((t) => (
+            <NavTab key={t.href} tab={t} active={!!path?.startsWith(t.href)} />
+          ))}
+          <div className="flex justify-center">
+            <Link
+              href="/id"
+              aria-label="我的數位身分證"
+              className={cx(
+                "pill-gradient -mt-7 grid size-16 place-items-center rounded-full border-4 border-bg text-white transition active:scale-95",
+                path?.startsWith("/id") && "ring-2 ring-brand/60",
+              )}
+            >
+              <IdCardIcon className="size-8" />
+            </Link>
+          </div>
+          {RIGHT.map((t) => (
+            <NavTab key={t.href} tab={t} active={!!path?.startsWith(t.href)} />
+          ))}
+        </div>
       </nav>
     </div>
+    </div>
+  );
+}
+
+function NavTab({ tab, active }: { tab: Tab; active: boolean }) {
+  return (
+    <Link href={tab.href} className={cx("flex flex-col items-center gap-0.5 py-3 text-[11px]", active ? "text-brand" : "text-ink-3 hover:text-ink-2")}>
+      <svg viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth={active ? 2 : 1.6} strokeLinejoin="round" strokeLinecap="round" aria-hidden>
+        <path d={tab.icon} />
+      </svg>
+      {tab.label}
+    </Link>
   );
 }

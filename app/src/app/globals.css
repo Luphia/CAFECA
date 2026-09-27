@@ -103,3 +103,60 @@ body {
 
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 .rise { animation: rise 0.25s ease-out; }
+
+/* ───────── App 內頁（登入後）：深紫夜色主題，參考設計稿 ───────── */
+html.app-dark {
+  --bg: #17122b;
+  --surface: #221a3d;
+  --surface-2: #2c2350;
+  --line: #3a3063;
+  --ink: #f5f0ff;
+  --ink-2: #c3b8e3;
+  --ink-3: #8c82b3;
+  --brand: #ef5da8;
+  --brand-2: #d9489b;
+  --brand-3: #f69a5a;
+  --ok: #4fd8a2;
+  --warn: #f5b454;
+  --danger: #ff7a92;
+  --ok-bg: #173a33;
+  --warn-bg: #3b2e1c;
+  --danger-bg: #43202d;
+  --brand-bg: #3d2253;
+  --epaper: #dcdbd3;
+  --epaper-ink: #1b1b1b;
+  color-scheme: dark;
+}
+
+/* 頂部的洋紅光暈 */
+.app-glow {
+  background:
+    radial-gradient(60% 38% at 18% 0%, rgba(239, 93, 168, 0.45) 0%, rgba(239, 93, 168, 0) 70%),
+    radial-gradient(50% 30% at 95% 8%, rgba(160, 80, 220, 0.35) 0%, rgba(160, 80, 220, 0) 70%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* 粉紅膠囊按鈕（設計稿主要按鈕） */
+.pill-gradient {
+  background: linear-gradient(90deg, #f7709f 0%, #e0529c 55%, #c94fb8 100%);
+  box-shadow: 0 10px 24px -10px rgba(239, 93, 168, 0.7);
+}
+
+/* 資產卡片：玻璃感 */
+.glass {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+.btn-primary {
+  background: linear-gradient(200deg, var(--brand-3) 0%, var(--brand-2) 45%, var(--brand) 100%);
+}
+html.app-dark .btn-primary {
+  background: linear-gradient(90deg, #f7709f 0%, #e0529c 55%, #c94fb8 100%);
+  box-shadow: 0 10px 24px -12px rgba(239, 93, 168, 0.7);
+}

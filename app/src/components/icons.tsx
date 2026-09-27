@@ -18,3 +18,14 @@ export function ScanIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** 身分證圖示（底部導覽中央按鈕） */
+export function IdCardIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="2.5" y="5" width="19" height="14" rx="2.5" />
+      <circle cx="8.5" cy="11" r="2.2" />
+      <path d="M5.3 16.2c.6-1.5 1.8-2.3 3.2-2.3s2.6.8 3.2 2.3M14.5 10h4M14.5 13h3" />
+    </svg>
+  );
+}
