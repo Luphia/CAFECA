@@ -28,11 +28,7 @@ contract KeyringTest is Base {
         address predicted = factory.getAddress(idc2);
         vm.deal(predicted, 1 ether);
 
-        (bytes32 qx, bytes32 qy) = _pub(NEW_PHONE);
-        uint64 expiry = uint64(block.timestamp + 1 hours);
-        uint256 nonce = factory.bindNonce(qx, qy, RP, expiry);
-        bytes memory proof = verifier.makeProof([uint256(idc2), uint256(JWK), nonce, uint256(expiry)]);
-        IdentityAccountFactory.BindParams memory b = IdentityAccountFactory.BindParams(qx, qy, RP, JWK, expiry, proof);
+        IdentityAccountFactory.BindParams memory b = _bindFor(idc2, NEW_PHONE, EPHEMERAL);
 
         PackedUserOperation memory op =
             _op(predicted, address(keyring), _exec(address(dd), 0, abi.encodeCall(dd.registerDevice, (bytes32("iphone"), hex"01"))));
@@ -45,12 +41,22 @@ contract KeyringTest is Base {
         assertTrue(recovery.isIdentityOf(idc2, predicted));
     }
 
-    function test_BindProofCannotBindOtherKey() public {
+    function test_InterceptedLoginCannotBindOtherKey() public {
         bytes32 idc2 = bytes32(uint256(keccak256("google|sub-777|salt")) >> 8);
-        address predicted = factory.getAddress(idc2);
-        IdentityAccountFactory.BindParams memory b = _bindParams(predicted, PHONE);
-        // 攻擊者攔截 JWT／證明，換上自己的公鑰
+        IdentityAccountFactory.BindParams memory b = _bindFor(idc2, PHONE, EPHEMERAL);
+        // 攻擊者攔截 JWT／證明，換上自己的公鑰，但沒有 ephemeral 私鑰
         (b.qx, b.qy) = _pub(ATTACKER);
+        vm.expectRevert(IdentityAccountFactory.InvalidEphemeralSignature.selector);
+        factory.createAccount(idc2, b);
+    }
+
+    function test_InterceptedLoginWithOwnEphemeralRejected() public {
+        bytes32 idc2 = bytes32(uint256(keccak256("google|sub-777|salt")) >> 8);
+        IdentityAccountFactory.BindParams memory good = _bindFor(idc2, PHONE, EPHEMERAL);
+        // 攻擊者用自己的 ephemeral 重簽，但 JWT nonce 綁的是受害者的 ephemeral
+        IdentityAccountFactory.BindParams memory b = _bindFor(idc2, ATTACKER, 0xBAD2);
+        b.proof = good.proof;
+        b.expiry = good.expiry;
         vm.expectRevert(IdentityAccountFactory.InvalidProof.selector);
         factory.createAccount(idc2, b);
     }

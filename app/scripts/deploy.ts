@@ -94,9 +94,10 @@ async function main() {
 
   const balance = await pub.getBalance({ address: deployer.address });
   console.log(`chainId ${chainId}，部署者 ${deployer.address}，餘額 ${formatEther(balance)} BOLT`);
-  const deposit = parseEther(env.PAYMASTER_DEPOSIT ?? "5");
-  const stake = parseEther(env.PAYMASTER_STAKE ?? "1");
-  if (balance < deposit + stake + parseEther("1")) {
+  const factoryOnly = process.argv.includes("--factory");
+  const deposit = factoryOnly ? 0n : parseEther(env.PAYMASTER_DEPOSIT ?? "5");
+  const stake = factoryOnly ? 0n : parseEther(env.PAYMASTER_STAKE ?? "1");
+  if (balance < deposit + stake + parseEther(factoryOnly ? "0.2" : "1")) {
     console.error(`\n部署者地址：${deployer.address}`);
     console.error(`請轉入 BOLT 到這個地址（目前 ${formatEther(balance)} BOLT），再執行一次 npm run deploy。`);
     console.error("私鑰已存在 .env.local 的 DEPLOYER_PRIVATE_KEY，請妥善保管。\n");
@@ -134,6 +135,28 @@ async function main() {
     const hash = await wallet.writeContract({ address, abi: a.abi, functionName: fn, args, value, ...(await feeOpts()) } as never);
     const rc = await pub.waitForTransactionReceipt({ hash, timeout: 180_000 });
     if (rc.status !== "success") throw new Error(`${name}.${fn} 失敗 ${hash}`);
+  }
+
+  // 只重新部署工廠（其餘合約不變時使用：npm run deploy -- --factory）
+  if (factoryOnly) {
+    if (!existsSync(OUT_FILE)) throw new Error("找不到既有部署，請先完整部署");
+    const d = JSON.parse(readFileSync(OUT_FILE, "utf8"));
+    if (!d.deployed || d.chainId !== chainId) throw new Error("既有部署不在這條鏈上，請先完整部署");
+    console.log("只重新部署 IdentityAccountFactory…");
+    const factory = await deploy("IdentityAccountFactory", [
+      d.accountImpl,
+      d.keyring,
+      d.recovery,
+      d.jwks,
+      d.oidcVerifier,
+      d.twdc,
+      parseUnits("10000", 6),
+      parseUnits("30000", 6),
+    ]);
+    writeFileSync(OUT_FILE, JSON.stringify({ ...d, factory }, null, 2) + "\n");
+    console.log(`完成 ✓ 舊工廠 ${d.factory} → 新工廠 ${factory}`);
+    console.log("注意：帳戶地址由工廠地址決定，舊工廠建立的測試錢包需重新開戶。");
+    return;
   }
 
   const startBlock = Number(await pub.getBlockNumber());

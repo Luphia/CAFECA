@@ -26,7 +26,7 @@ export default function SecurityPage() {
 }
 
 function SecurityBody() {
-  const { wallet, chain, refresh } = useWallet();
+  const { wallet, chain, refresh, refreshSession } = useWallet();
   const confirmOnCard = useCardConfirm();
   const toast = useToast();
   const router = useRouter();
@@ -170,6 +170,7 @@ function SecurityBody() {
 
   const logout = async () => {
     await api("/api/auth/logout", {});
+    await refreshSession();
     clearWallet();
     router.replace("/");
   };

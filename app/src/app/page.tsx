@@ -4,28 +4,36 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { DEPLOYMENT } from "@/lib/config";
 import { deviceDirectoryAbi, identityAccountFactoryAbi } from "@/lib/contracts/abis";
 import { api, passkeySigner, publicClient, recoverPasskeyForAccount, saveWallet, submitOp } from "@/lib/client";
 import { ensureDeviceKey } from "@/lib/chat-crypto";
 import { execCall } from "@/lib/userop";
-import { registerPasskey, type PasskeyInfo } from "@/lib/webauthn";
+import { registerPasskey } from "@/lib/webauthn";
 import { CardFront } from "@/components/cafeca-card";
 import { IdentityLogin } from "@/components/identity-login";
 import { useWallet } from "@/components/wallet-provider";
-import { Button, Notice, Panel, Spinner, TxLink, errMsg, useToast } from "@/components/ui";
+import { Button, Notice, Panel, Spinner, TxLink, errMsg, short, useToast } from "@/components/ui";
 
-type Mode = "welcome" | "create" | "login";
+/** 登入前產生的一次性金鑰：OIDC nonce 綁定它，登入後由它授權「此身分綁定此 passkey」 */
+type Ephemeral = { pk: Hex; address: Address; expiry: number; nonce: string };
+
+type Identity = {
+  idToken: string;
+  provider: string;
+  email: string | null;
+  idCommitment: Hex;
+  address: Address;
+  deployed: boolean;
+};
 
 export default function Onboarding() {
   const { wallet, hydrated, refreshSession } = useWallet();
   const router = useRouter();
   const toast = useToast();
-  const [mode, setMode] = useState<Mode>("welcome");
-
-  // 建立流程狀態
-  const [pk, setPk] = useState<PasskeyInfo | null>(null);
-  const [nonce, setNonce] = useState<{ value: string; expiry: number } | null>(null);
+  const [eph, setEph] = useState<Ephemeral | null>(null);
+  const [identity, setIdentity] = useState<Identity | null>(null);
   const [progress, setProgress] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [tx, setTx] = useState<Hex | null>(null);
@@ -34,22 +42,26 @@ export default function Onboarding() {
     if (hydrated && wallet) router.replace("/wallet");
   }, [hydrated, wallet, router]);
 
+  // 1. 產生 ephemeral 金鑰並算出登入 nonce（只存在記憶體，離開頁面即丟棄）
+  useEffect(() => {
+    if (!DEPLOYMENT.deployed) return;
+    const pk = generatePrivateKey();
+    const address = privateKeyToAccount(pk).address;
+    const expiry = Math.floor(Date.now() / 1000) + 3600;
+    publicClient
+      .readContract({ address: DEPLOYMENT.factory, abi: identityAccountFactoryAbi, functionName: "bindNonce", args: [address, BigInt(expiry)] })
+      .then((n) => setEph({ pk, address, expiry, nonce: "0x" + n.toString(16) }))
+      .catch((e) => toast("無法連線到 Boltchain：" + errMsg(e), "danger"));
+  }, [toast]);
+
   const log = (s: string) => setProgress((p) => [...p, s]);
 
-  // 1. 建立 passkey，並算出綁定這把公鑰的 OIDC nonce
-  const createPasskey = async () => {
+  // 2. 以 Google／Apple 建立身分
+  const onToken = async (idToken: string) => {
     setBusy(true);
     try {
-      const info = await registerPasskey(`cafeca-${Date.now().toString(36)}`, "此裝置");
-      setPk(info);
-      const expiry = Math.floor(Date.now() / 1000) + 3600;
-      const n = await publicClient.readContract({
-        address: DEPLOYMENT.factory,
-        abi: identityAccountFactoryAbi,
-        functionName: "bindNonce",
-        args: [info.qx, info.qy, info.rpIdHash, BigInt(expiry)],
-      });
-      setNonce({ value: "0x" + n.toString(16), expiry });
+      const d = await api<Omit<Identity, "idToken">>("/api/oidc/discover", { idToken });
+      setIdentity({ ...d, idToken });
     } catch (e) {
       toast(errMsg(e), "danger");
     } finally {
@@ -57,24 +69,37 @@ export default function Onboarding() {
     }
   };
 
-  // 2. 登入 Google／Apple（nonce 綁定 passkey）→ 3. 部署帳戶＋登記聊天裝置（同一筆 UserOp）
-  const onBindToken = async (idToken: string) => {
-    if (!pk || !nonce) return;
+  // 3a. 新身分：在此裝置建立 FIDO2 金鑰，ephemeral 授權綁定，部署身分合約
+  const createKeyAndAccount = async () => {
+    if (!identity || !eph) return;
     setBusy(true);
     setProgress([]);
     try {
-      log("驗證身分並產生綁定證明…");
-      const bind = await api<{ address: Address; idCommitment: Hex; email: string | null; provider: string; initCode: Hex }>(
-        "/api/oidc/bind",
-        { idToken, qx: pk.qx, qy: pk.qy, rpIdHash: pk.rpIdHash, expiry: nonce.expiry },
-      );
-      log(`帳戶地址 ${bind.address}`);
+      log("在此裝置建立 FIDO2 金鑰（Passkey）…");
+      const pk = await registerPasskey(identity.email ?? `cafeca-${Date.now().toString(36)}`, "此裝置");
+      const digest = await publicClient.readContract({
+        address: DEPLOYMENT.factory,
+        abi: identityAccountFactoryAbi,
+        functionName: "bindAuthorizationDigest",
+        args: [identity.idCommitment, pk.qx, pk.qy, pk.rpIdHash],
+      });
+      const ephemeralSig = await privateKeyToAccount(eph.pk).sign({ hash: digest });
+      log("產生身分綁定證明…");
+      const bind = await api<{ address: Address; initCode: Hex }>("/api/oidc/bind", {
+        idToken: identity.idToken,
+        ephemeral: eph.address,
+        expiry: eph.expiry,
+        qx: pk.qx,
+        qy: pk.qy,
+        rpIdHash: pk.rpIdHash,
+        ephemeralSig,
+      });
       const dev = await ensureDeviceKey();
       const callData = execCall(
         DEPLOYMENT.deviceDirectory,
         encodeFunctionData({ abi: deviceDirectoryAbi, functionName: "registerDevice", args: [dev.deviceId, dev.pub] }),
       );
-      log("請用 Passkey 簽署開戶交易（gas 由平台贊助）…");
+      log("請用剛建立的 Passkey 簽署，部署身分合約（gas 由平台贊助）…");
       const res = await submitOp({
         sender: bind.address,
         validator: DEPLOYMENT.keyring,
@@ -83,12 +108,12 @@ export default function Onboarding() {
         signer: passkeySigner([pk]),
       });
       setTx(res.txHash);
-      log("開戶完成 ✓");
+      log("身分合約已部署 ✓");
       saveWallet({
         address: bind.address,
-        idCommitment: bind.idCommitment,
-        provider: bind.provider,
-        email: bind.email,
+        idCommitment: identity.idCommitment,
+        provider: identity.provider,
+        email: identity.email,
         passkeys: [pk],
         deviceId: dev.deviceId,
         createdAt: Date.now(),
@@ -106,30 +131,22 @@ export default function Onboarding() {
     }
   };
 
-  // 登入既有帳戶：先由 id_token 找到帳戶，再用此裝置的 passkey 比對鏈上金鑰
-  const onLoginToken = async (idToken: string) => {
+  // 3b. 既有身分：用此裝置已註冊的 Passkey 登入
+  const loginWithPasskey = async () => {
+    if (!identity) return;
     setBusy(true);
     try {
-      const d = await api<{ address: Address; deployed: boolean; idCommitment: Hex; email: string | null; provider: string }>(
-        "/api/oidc/discover",
-        { idToken },
-      );
-      if (!d.deployed) {
-        toast("這個帳號還沒有錢包，請先建立", "danger");
-        setMode("create");
-        return;
-      }
-      const found = await recoverPasskeyForAccount(d.address);
+      const found = await recoverPasskeyForAccount(identity.address);
       if (!found) {
         toast("此裝置沒有這個錢包的 Passkey，請使用恢復流程", "danger");
-        router.push(`/recover?address=${d.address}`);
+        router.push(`/recover?address=${identity.address}`);
         return;
       }
       saveWallet({
-        address: d.address,
-        idCommitment: d.idCommitment,
-        provider: d.provider,
-        email: d.email,
+        address: identity.address,
+        idCommitment: identity.idCommitment,
+        provider: identity.provider,
+        email: identity.email,
         passkeys: [found],
         createdAt: Date.now(),
       });
@@ -146,7 +163,7 @@ export default function Onboarding() {
       <div className="mb-8">
         <div className="text-gradient text-sm font-semibold tracking-[0.3em]">CAFECA</div>
         <h1 className="mt-2 text-[28px] font-bold leading-tight">你的數位身分證，也是錢包</h1>
-        <p className="mt-2 text-[15px] text-ink-2">Google／Apple 登入開戶，Passkey 與 CAFECA 卡操作。聊天、支付、AI 子錢包都在這裡。</p>
+        <p className="mt-2 text-[15px] text-ink-2">先以 Google／Apple 建立身分，再於裝置上建立 FIDO2 金鑰操作身分合約。</p>
       </div>
 
       <div className="relative mx-auto mb-8 w-full max-w-[340px]">
@@ -159,53 +176,67 @@ export default function Onboarding() {
         </div>
       )}
 
-      {mode === "welcome" && (
-        <div className="space-y-3">
-          <Button className="w-full" onClick={() => setMode("create")}>建立新錢包</Button>
-          <Button className="w-full" variant="secondary" onClick={() => setMode("login")}>我已經有錢包</Button>
-          <Link href="/recover" className="block pt-2 text-center text-sm text-ink-2 hover:text-brand">遺失裝置？恢復錢包</Link>
-        </div>
-      )}
+      <Panel className="rise">
+        <ol className="space-y-6">
+          <li>
+            <Step n={1} done={!!identity} title="以 Google／Apple 建立身分" desc="你的身分承諾與錢包地址由登入帳號決定；鏈上不會出現 email。" />
+            {!identity && (
+              <div className="mt-3">
+                {eph ? <IdentityLogin nonce={eph.nonce} onToken={onToken} disabled={busy} /> : DEPLOYMENT.deployed && <Spinner className="text-brand" />}
+              </div>
+            )}
+            {identity && (
+              <div className="mt-2 rounded-xl bg-surface-2 p-3 text-sm">
+                <div className="font-medium">{identity.email ?? "已驗證"}</div>
+                <div className="font-mono text-xs text-ink-3">錢包地址 {short(identity.address, 6)}</div>
+              </div>
+            )}
+          </li>
 
-      {mode === "create" && (
-        <Panel title="建立新錢包" className="rise">
-          <ol className="space-y-5">
-            <li>
-              <Step n={1} done={!!pk} title="在此裝置建立 Passkey" desc="私鑰留在裝置的安全晶片，之後用指紋或臉部辨識簽署交易。" />
-              {!pk && (
-                <Button className="mt-3 w-full" onClick={createPasskey} busy={busy}>建立 Passkey</Button>
-              )}
-            </li>
-            <li>
-              <Step n={2} done={!!tx} title="以 Google／Apple 驗證身分" desc="登入的 nonce 綁定剛才的 Passkey 公鑰，被攔截的登入憑證也無法拿去綁別的裝置。" />
-              {pk && nonce && !tx && (
-                <div className="mt-3">
-                  <IdentityLogin nonce={nonce.value} onToken={onBindToken} disabled={busy} />
-                </div>
-              )}
-            </li>
-          </ol>
-          {progress.length > 0 && (
-            <div className="mt-5 space-y-1 rounded-xl bg-surface-2 p-3 text-xs text-ink-2">
-              {progress.map((p, i) => (
-                <div key={i}>{p}</div>
-              ))}
-              {busy && <Spinner className="mt-1 text-brand" />}
-              {tx && <div>交易：<TxLink hash={tx} /></div>}
-            </div>
-          )}
-          <button className="mt-4 text-sm text-ink-3" onClick={() => setMode("welcome")}>返回</button>
-        </Panel>
-      )}
+          <li>
+            <Step
+              n={2}
+              done={!!tx}
+              title={identity?.deployed ? "用此裝置的 FIDO2 金鑰登入" : "在此裝置建立 FIDO2 金鑰"}
+              desc={
+                identity?.deployed
+                  ? "這個身分已經有錢包，請用先前在此裝置註冊的 Passkey 確認。"
+                  : "私鑰留在裝置的安全晶片；它將成為操作你身分合約的第一把金鑰。"
+              }
+            />
+            {identity && !identity.deployed && !tx && (
+              <Button className="mt-3 w-full" onClick={createKeyAndAccount} busy={busy}>
+                建立 FIDO2 金鑰並開通錢包
+              </Button>
+            )}
+            {identity?.deployed && (
+              <div className="mt-3 space-y-2">
+                <Button className="w-full" onClick={loginWithPasskey} busy={busy}>以 Passkey 登入</Button>
+                <Link href={`/recover?address=${identity.address}`} className="block text-center text-sm text-ink-2 hover:text-brand">
+                  此裝置沒有 Passkey？恢復錢包
+                </Link>
+              </div>
+            )}
+          </li>
+        </ol>
 
-      {mode === "login" && (
-        <Panel title="登入既有錢包" className="rise">
-          <p className="mb-4 text-sm text-ink-2">用開戶時的 Google／Apple 帳號登入，接著用此裝置的 Passkey 確認。</p>
-          <IdentityLogin onToken={onLoginToken} disabled={busy} />
-          {busy && <Spinner className="mt-3 text-brand" />}
-          <button className="mt-4 text-sm text-ink-3" onClick={() => setMode("welcome")}>返回</button>
-        </Panel>
-      )}
+        {progress.length > 0 && (
+          <div className="mt-5 space-y-1 rounded-xl bg-surface-2 p-3 text-xs text-ink-2">
+            {progress.map((p, i) => (
+              <div key={i}>{p}</div>
+            ))}
+            {busy && <Spinner className="mt-1 text-brand" />}
+            {tx && <div>交易：<TxLink hash={tx} /></div>}
+          </div>
+        )}
+        {identity && !tx && (
+          <button className="mt-4 text-sm text-ink-3" onClick={() => setIdentity(null)} disabled={busy}>
+            換一個帳號
+          </button>
+        )}
+      </Panel>
+
+      <Link href="/recover" className="mt-4 block text-center text-sm text-ink-2 hover:text-brand">遺失裝置？恢復錢包</Link>
     </div>
   );
 }

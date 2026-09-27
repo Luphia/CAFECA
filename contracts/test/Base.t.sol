@@ -113,12 +113,25 @@ abstract contract Base is Test {
 
     // ───────────────────────── 帳戶 ─────────────────────────
 
-    function _bindParams(address acct, uint256 pk) internal view returns (IdentityAccountFactory.BindParams memory b) {
+    uint256 internal constant EPHEMERAL = 0xE9E3; // 登入前產生的一次性金鑰
+
+    function _bindParams(address, uint256 pk) internal view returns (IdentityAccountFactory.BindParams memory b) {
+        return _bindFor(IDC, pk, EPHEMERAL);
+    }
+
+    /// @dev 開戶順序：ephemeral 金鑰 → OIDC 登入（nonce 綁 ephemeral）→ 建立 passkey → ephemeral 授權綁定
+    function _bindFor(bytes32 idc, uint256 pk, uint256 ephemeralPk)
+        internal
+        view
+        returns (IdentityAccountFactory.BindParams memory b)
+    {
         (bytes32 qx, bytes32 qy) = _pub(pk);
+        address eph = vm.addr(ephemeralPk);
         uint64 expiry = uint64(block.timestamp + 1 hours);
-        uint256 nonce = factory.bindNonce(qx, qy, RP, expiry);
-        bytes memory proof = verifier.makeProof([uint256(IDC), uint256(JWK), nonce, uint256(expiry)]);
-        b = IdentityAccountFactory.BindParams(qx, qy, RP, JWK, expiry, proof);
+        uint256 nonce = factory.bindNonce(eph, expiry);
+        bytes memory proof = verifier.makeProof([uint256(idc), uint256(JWK), nonce, uint256(expiry)]);
+        bytes memory sig = _ethSign(ephemeralPk, factory.bindAuthorizationDigest(idc, qx, qy, RP));
+        b = IdentityAccountFactory.BindParams(qx, qy, RP, JWK, eph, expiry, proof, sig);
     }
 
     function _deployAccount() internal returns (address acct) {

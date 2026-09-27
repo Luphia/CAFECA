@@ -19,6 +19,12 @@ npm run deploy
 npm run dev   # http://localhost:3000
 ```
 
+只修改了工廠合約時（例如開戶流程調整），不必整套重新部署：
+
+```bash
+npm run deploy -- --factory   # 只部署新的 IdentityAccountFactory 並更新 deployments/boltchain-testnet.json
+```
+
 沒有 Google Client ID 時，可以用畫面上的「測試網開發者登入」（`NEXT_PUBLIC_DEV_LOGIN=1`，部署腳本預設開啟），它會模擬 Google 簽發 id_token，其餘流程完全相同。
 
 ## 功能對照
