@@ -5,7 +5,8 @@
  *
  * 第一次執行：自動產生部署者私鑰（DEPLOYER_PRIVATE_KEY）並印出地址，請轉 BOLT 進去後再執行一次。
  * 也會自動產生其餘服務金鑰（paymaster 簽章、發卡方、KYC、Visa 處理商、商家）並寫回 .env.local，
- * 部署結果寫入 deployments/boltchain-testnet.json。
+ * 部署結果預設寫入 deployments/boltchain-testnet.local.json（不進 git）；
+ * 要更新團隊共用的 deployments/boltchain-testnet.json 時加 --publish（npm run deploy -- --publish）。
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import path from "path";
@@ -29,7 +30,11 @@ import { sha256 } from "@noble/hashes/sha256";
 
 const ROOT = process.cwd();
 const ENV_FILE = path.join(ROOT, ".env.local");
-const OUT_FILE = path.join(ROOT, "deployments", "boltchain-testnet.json");
+// 預設寫入本機專用、不進 git 的 .local.json；加 --publish 才更新 git 追蹤的共用部署檔
+const SHARED_FILE = path.join(ROOT, "deployments", "boltchain-testnet.json");
+const LOCAL_FILE = path.join(ROOT, "deployments", "boltchain-testnet.local.json");
+const OUT_FILE = process.argv.includes("--publish") ? SHARED_FILE : LOCAL_FILE;
+const IN_FILE = existsSync(OUT_FILE) ? OUT_FILE : SHARED_FILE;
 
 function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -50,7 +55,7 @@ async function main() {
   // 產生缺少的金鑰（含部署者私鑰）
   const gen: Record<string, () => Promise<string> | string> = {
     DEPLOYER_PRIVATE_KEY: generatePrivateKey,
-    RPC_URL: () => "http://211.22.118.149:8545",
+    RPC_URL: () => "https://boltchain.cafeca.io",
     PAYMASTER_SIGNER_KEY: generatePrivateKey,
     CARD_ISSUER_KEY: generatePrivateKey,
     KYC_SIGNER_KEY: generatePrivateKey,
@@ -133,8 +138,8 @@ async function main() {
 
   // 只重新部署工廠（其餘合約不變時使用：npm run deploy -- --factory）
   if (factoryOnly) {
-    if (!existsSync(OUT_FILE)) throw new Error("找不到既有部署，請先完整部署");
-    const d = JSON.parse(readFileSync(OUT_FILE, "utf8"));
+    if (!existsSync(IN_FILE)) throw new Error("找不到既有部署，請先完整部署");
+    const d = JSON.parse(readFileSync(IN_FILE, "utf8"));
     if (!d.deployed || d.chainId !== chainId) throw new Error("既有部署不在這條鏈上，請先完整部署");
     console.log("只重新部署 IdentityAccountFactory…");
     const factory = await deploy("IdentityAccountFactory", [

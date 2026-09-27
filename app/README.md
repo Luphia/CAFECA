@@ -16,7 +16,18 @@ npm run deploy
 npm run dev   # http://localhost:10002
 ```
 
-已經部署過、之後合約有變更（例如 v0.3 金鑰模型）時，`npm run deploy` 會補上缺少的服務金鑰（`GUARDIAN_ROOT_KEY`、`GUARDIAN_SEED`）並整套重新部署；舊身分不會搬到新合約，需重新建立。只改了工廠合約時可用 `npm run deploy -- --factory`。
+### 部署檔案（避免 git 衝突）
+
+| 檔案 | 進 git | 用途 |
+| --- | --- | --- |
+| `deployments/boltchain-testnet.json` | 是 | 團隊共用的測試網部署；clone 下來即可直接連線 |
+| `deployments/boltchain-testnet.local.json` | 否 | `npm run deploy` 預設寫這裡，只影響你自己的環境 |
+
+App 啟動時優先讀 `.local.json`，沒有才用共用檔（修改後需重新啟動 `npm run dev`）。
+要把你的部署設為團隊共用版本時才執行 `npm run deploy -- --publish`，並 commit `boltchain-testnet.json`。
+刪掉 `.local.json` 即可改回共用部署。只改了工廠合約時可用 `npm run deploy -- --factory`。
+
+RPC 與區塊鏈瀏覽器預設為 `https://boltchain.cafeca.io`；伺服器端可用 `.env.local` 的 `RPC_URL` 覆寫。
 
 Passkey 需要安全環境：本機請用 `http://localhost:10002`，其他網域須為 https。
 

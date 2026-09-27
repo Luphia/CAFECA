@@ -13,7 +13,7 @@ function req(name: string): string {
  * - 其餘各自獨立，對應規格中的不同信任方
  */
 export const env = {
-  rpcUrl: process.env.RPC_URL ?? "http://211.22.118.149:8545",
+  rpcUrl: process.env.RPC_URL ?? "https://boltchain.cafeca.io",
   operatorKey: () => req("DEPLOYER_PRIVATE_KEY") as Hex,
   paymasterSignerKey: () => req("PAYMASTER_SIGNER_KEY") as Hex,
   cardIssuerKey: () => req("CARD_ISSUER_KEY") as Hex,

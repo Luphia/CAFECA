@@ -1,5 +1,4 @@
 import { defineChain, type Address } from "viem";
-import deployment from "../../deployments/boltchain-testnet.json";
 
 export type Deployment = {
   chainId: number;
@@ -18,20 +17,27 @@ export type Deployment = {
   startBlock: number;
 };
 
-export const DEPLOYMENT = deployment as Deployment;
+/**
+ * 部署位址由 next.config.ts 在啟動時讀入（優先 deployments/boltchain-testnet.local.json，
+ * 沒有才用 git 追蹤的 deployments/boltchain-testnet.json），避免每個人部署後改到共用檔案。
+ */
+export const DEPLOYMENT = JSON.parse(process.env.NEXT_PUBLIC_CAFECA_DEPLOYMENT ?? "{}") as Deployment;
 
-export const CHAIN_ID = DEPLOYMENT.chainId;
+export const CHAIN_ID = DEPLOYMENT.chainId ?? 8018;
+
+/** Boltchain 測試網公開 RPC（伺服器端可用 .env.local 的 RPC_URL 覆寫） */
+export const BOLTCHAIN_RPC = "https://boltchain.cafeca.io";
 
 /** 瀏覽器一律經由 /api/rpc 代理（避免 CORS 與 mixed content），伺服器直連 RPC_URL */
 export const boltchain = defineChain({
   id: CHAIN_ID,
   name: "Boltchain Testnet",
   nativeCurrency: { name: "BOLT", symbol: "BOLT", decimals: 18 },
-  rpcUrls: { default: { http: ["http://211.22.118.149:8545"] } },
-  blockExplorers: { default: { name: "Boltchain Explorer", url: "http://211.22.118.149:8080" } },
+  rpcUrls: { default: { http: [BOLTCHAIN_RPC] } },
+  blockExplorers: { default: { name: "Boltchain Explorer", url: "https://boltchain.cafeca.io" } },
 });
 
-export const EXPLORER = "http://211.22.118.149:8080";
+export const EXPLORER = "https://boltchain.cafeca.io";
 
 export const TWDC_DECIMALS = 6;
 
