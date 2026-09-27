@@ -10,7 +10,7 @@ import { execCall } from "@/lib/userop";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
 import { useWallet } from "@/components/wallet-provider";
-import { AddrLink, Badge, Button, Field, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, useToast } from "@/components/ui";
+import { AddrLink, Badge, Button, EyeToggle, Field, HIDDEN_AMOUNT, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, useToast } from "@/components/ui";
 
 type Agent = {
   id: string;
@@ -123,7 +123,7 @@ function AgentsBody() {
 type Intent = { id: number; to: Address; amount: bigint; expiry: number; done: boolean };
 
 function AgentCard({ agent, catalog, reload }: { agent: Agent; catalog: Item[]; reload: () => Promise<void> }) {
-  const { wallet, refresh } = useWallet();
+  const { wallet, refresh, showBalance, setShowBalance } = useWallet();
   const confirmOnCard = useCardConfirm();
   const toast = useToast();
   const [state, setState] = useState<{
@@ -250,8 +250,13 @@ function AgentCard({ agent, catalog, reload }: { agent: Agent; catalog: Item[]; 
         <>
           <div className="mb-3 flex items-end justify-between">
             <div>
-              <div className="text-xs text-ink-3">通道餘額</div>
-              <div className="text-2xl font-semibold">{fmtTwdc(state.balance)} <span className="text-sm font-normal text-ink-3">TWDC</span></div>
+              <div className="flex items-center gap-1 text-xs text-ink-3">
+                通道餘額
+                <EyeToggle shown={showBalance} onToggle={() => setShowBalance(!showBalance)} className="size-6 hover:bg-surface-2" />
+              </div>
+              <div className="text-2xl font-semibold">
+                {showBalance ? fmtTwdc(state.balance) : HIDDEN_AMOUNT} <span className="text-sm font-normal text-ink-3">TWDC</span>
+              </div>
             </div>
             <AddrLink address={agent.channel} />
           </div>

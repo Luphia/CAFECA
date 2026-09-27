@@ -16,3 +16,23 @@ contracts/broadcast/
 contracts/lib/
 
 .DS_Store
+
+# logs & coverage
+*.log
+coverage/
+contracts/coverage/
+lcov.info
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+
+# 暫存與同步檔（Claude 同步用的壓縮檔、輸出資料夾）
+*.tar.gz
+Claude outputs/
+
+# 私鑰與憑證
+*.pem
+*.key

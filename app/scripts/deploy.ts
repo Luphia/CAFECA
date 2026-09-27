@@ -4,7 +4,7 @@
  *   npm run deploy
  *
  * 第一次執行：自動產生部署者私鑰（DEPLOYER_PRIVATE_KEY）並印出地址，請轉 BOLT 進去後再執行一次。
- * 也會自動產生其餘服務金鑰（paymaster 簽章、OIDC 驗證服務、發卡方、KYC、Visa 處理商、商家）並寫回 .env.local，
+ * 也會自動產生其餘服務金鑰（paymaster 簽章、發卡方、KYC、Visa 處理商、商家）並寫回 .env.local，
  * 部署結果寫入 deployments/boltchain-testnet.json。
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
@@ -24,7 +24,6 @@ import {
   type Hex,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { exportJWK, generateKeyPair } from "jose";
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 
@@ -53,26 +52,21 @@ async function main() {
     DEPLOYER_PRIVATE_KEY: generatePrivateKey,
     RPC_URL: () => "http://211.22.118.149:8545",
     PAYMASTER_SIGNER_KEY: generatePrivateKey,
-    OIDC_ATTESTOR_KEY: generatePrivateKey,
     CARD_ISSUER_KEY: generatePrivateKey,
     KYC_SIGNER_KEY: generatePrivateKey,
     VISA_OPERATOR_KEY: generatePrivateKey,
     MERCHANT_KEY: generatePrivateKey,
-    SALT_SECRET: () => toHex(crypto.getRandomValues(new Uint8Array(32))),
+    // 平台根金鑰（正式版離線保存）：授權安裝與輪替每個帳戶的平台備援金鑰
+    GUARDIAN_ROOT_KEY: generatePrivateKey,
+    // 衍生每個帳戶備援金鑰的種子（正式版：HSM 內每個帳戶產生獨立金鑰，不可匯出）
+    GUARDIAN_SEED: () => toHex(crypto.getRandomValues(new Uint8Array(32))),
     SESSION_SECRET: () => toHex(crypto.getRandomValues(new Uint8Array(32))),
-    DEV_OIDC_JWK: async () => {
-      const { privateKey } = await generateKeyPair("ES256", { extractable: true });
-      return JSON.stringify(await exportJWK(privateKey));
-    },
-    NEXT_PUBLIC_DEV_LOGIN: () => "1",
-    NEXT_PUBLIC_GOOGLE_CLIENT_ID: () => "",
-    NEXT_PUBLIC_APPLE_CLIENT_ID: () => "",
   };
   let appended = "";
   for (const [k, fn] of Object.entries(gen)) {
     if (env[k] === undefined) {
       env[k] = await fn();
-      appended += `${k}=${k === "DEV_OIDC_JWK" ? `'${env[k]}'` : env[k]}\n`;
+      appended += `${k}=${env[k]}\n`;
     }
   }
   if (appended) {
@@ -147,8 +141,6 @@ async function main() {
       d.accountImpl,
       d.keyring,
       d.recovery,
-      d.jwks,
-      d.oidcVerifier,
       d.twdc,
       parseUnits("10000", 6),
       parseUnits("30000", 6),
@@ -163,9 +155,6 @@ async function main() {
   console.log("部署合約…");
   const entryPoint = await deploy("EntryPoint");
   const accountImpl = await deploy("CafecaAccount", [entryPoint]);
-  const attestor = privateKeyToAccount(env.OIDC_ATTESTOR_KEY as Hex).address;
-  const oidcVerifier = await deploy("AttestedOidcVerifier", [attestor]);
-  const jwks = await deploy("JwksRegistry", [deployer.address]); // 測試網：部署者代替共識層系統地址
   const attestation = await deploy("AttestationRegistry", [deployer.address]);
   const deviceDirectory = await deploy("DeviceDirectory");
 
@@ -173,7 +162,7 @@ async function main() {
   const predict = (k: number) => getContractAddress({ from: deployer.address, nonce: BigInt(n + k) });
   const [pKeyring, pRecovery, pCv, pCm] = [predict(0), predict(1), predict(2), predict(3)];
   const keyring = await deploy("KeyringValidator", [pRecovery, pCm, pCv, deviceDirectory, attestation]);
-  const recovery = await deploy("RecoveryValidator", [keyring, jwks, oidcVerifier, attestation]);
+  const recovery = await deploy("RecoveryValidator", [keyring, attestation]);
   const channelValidator = await deploy("ChannelValidator");
   const channelManager = await deploy("ChannelManager", [accountImpl, channelValidator]);
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -185,8 +174,6 @@ async function main() {
     accountImpl,
     keyring,
     recovery,
-    jwks,
-    oidcVerifier,
     twdc,
     parseUnits("10000", 6),
     parseUnits("30000", 6),
@@ -197,6 +184,7 @@ async function main() {
   console.log("設定權限與 paymaster…");
   await send(attestation, "AttestationRegistry", "setCardIssuer", [privateKeyToAccount(env.CARD_ISSUER_KEY as Hex).address, true]);
   await send(attestation, "AttestationRegistry", "setKycSigner", [privateKeyToAccount(env.KYC_SIGNER_KEY as Hex).address, true]);
+  await send(attestation, "AttestationRegistry", "setGuardianAuthority", [privateKeyToAccount(env.GUARDIAN_ROOT_KEY as Hex).address, true]);
   await send(paymaster, "CafecaPaymaster", "setTier", [0, parseEther("5"), 30]);
   await send(paymaster, "CafecaPaymaster", "setTier", [1, parseEther("15"), 100]);
   await send(paymaster, "CafecaPaymaster", "setTier", [2, parseEther("50"), 300]);
@@ -213,11 +201,9 @@ async function main() {
     recovery,
     channelValidator,
     channelManager,
-    jwks,
     attestation,
     deviceDirectory,
     paymaster,
-    oidcVerifier,
     twdc,
     startBlock,
   };

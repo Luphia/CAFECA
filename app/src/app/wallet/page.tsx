@@ -2,15 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { encodeFunctionData, erc20Abi, formatEther, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from "viem";
+import { encodeFunctionData, erc20Abi, formatEther, formatUnits, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from "viem";
 import { DEPLOYMENT, Req, TWDC_DECIMALS } from "@/lib/config";
 import { keyringValidatorAbi } from "@/lib/contracts/abis";
 import { api, preview, publicClient, smartSigner, submitOp } from "@/lib/client";
 import { execCall } from "@/lib/userop";
+import { buildDeeplink } from "@/lib/deeplink";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
 import { useWallet } from "@/components/wallet-provider";
-import { AddrLink, Badge, Button, Field, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
+import { AddrLink, Badge, Button, EyeToggle, Field, HIDDEN_AMOUNT, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
 
 type Activity = { hash: Hex; from: Address; to: Address; value: bigint; block: bigint };
 
@@ -23,7 +24,7 @@ export default function WalletPage() {
 }
 
 function WalletBody() {
-  const { wallet, chain, refresh } = useWallet();
+  const { wallet, chain, refresh, showBalance, setShowBalance } = useWallet();
   const confirmOnCard = useCardConfirm();
   const toast = useToast();
   const [tab, setTab] = useState<"none" | "send" | "receive">("none");
@@ -69,9 +70,25 @@ function WalletBody() {
     loadActivity();
   }, [loadLimits, loadActivity, chain.twdc]);
 
+  // 收款 QR：CAFECA pay 深連結（手機相機掃描即開啟付款畫面；其他錢包仍可從連結中讀出地址）
+  const payLink = buildDeeplink({ action: "pay", to: address });
   useEffect(() => {
-    QRCode.toDataURL(address, { margin: 1, width: 220 }).then(setQr).catch(() => undefined);
-  }, [address]);
+    QRCode.toDataURL(payLink, { margin: 1, width: 220 }).then(setQr).catch(() => undefined);
+  }, [payLink]);
+
+  // 由 pay 深連結開啟：預填收款人與金額（不自動送出）
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const pto = q.get("to");
+    if (!pto) return;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setTo(pto);
+    const amt = q.get("amt");
+    if (amt && /^\d+$/.test(amt)) setAmount(formatUnits(BigInt(amt), TWDC_DECIMALS));
+    setTab("send");
+    /* eslint-enable react-hooks/set-state-in-effect */
+    window.history.replaceState(null, "", "/wallet");
+  }, []);
 
   const resolveTo = async (): Promise<Address> => {
     const q = to.trim();
@@ -137,9 +154,16 @@ function WalletBody() {
   return (
     <>
       <div className="brand-gradient rise relative overflow-hidden rounded-3xl p-5 text-white shadow-lg">
-        <div className="text-sm opacity-90">TWDC 餘額</div>
-        <div className="mt-1 text-[34px] font-bold tracking-tight">{chain.loaded ? fmtTwdc(chain.twdc) : "—"}</div>
-        <div className="mt-1 text-xs opacity-80">BOLT {chain.loaded ? Number(formatEther(chain.bolt)).toFixed(4) : "—"}（gas 由平台贊助，不需持有）</div>
+        <div className="flex items-center gap-1 text-sm opacity-90">
+          TWDC 餘額
+          <EyeToggle shown={showBalance} onToggle={() => setShowBalance(!showBalance)} />
+        </div>
+        <div className="mt-1 text-[34px] font-bold tracking-tight" data-testid="balance">
+          {!chain.loaded ? "—" : showBalance ? fmtTwdc(chain.twdc) : HIDDEN_AMOUNT}
+        </div>
+        <div className="mt-1 text-xs opacity-80">
+          BOLT {!chain.loaded ? "—" : showBalance ? Number(formatEther(chain.bolt)).toFixed(4) : HIDDEN_AMOUNT}（gas 由平台贊助，不需持有）
+        </div>
         <button
           className="mt-4 rounded-full bg-white/20 px-3 py-1 font-mono text-xs backdrop-blur hover:bg-white/30"
           onClick={() => {

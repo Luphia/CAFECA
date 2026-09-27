@@ -1,10 +1,12 @@
-import { encodeAbiParameters, keccak256, toHex, type Hex } from "viem";
+import { encodeAbiParameters, keccak256, toHex, zeroAddress, type Hex } from "viem";
 import { DEPLOYMENT } from "@/lib/config";
 import { attestationRegistryAbi } from "@/lib/contracts/abis";
 import { operatorTx, publicClient, signerOf } from "@/server/chain";
 import { env } from "@/server/env";
+import { authorizeGuardian, currentGuardian, guardianAddress } from "@/server/guardian";
+import { checkEvidence, kycIdHash } from "@/server/kyc";
 import { handle, HttpError, requireSession } from "@/server/session";
-import { update } from "@/server/store";
+import { read, update } from "@/server/store";
 
 function leafHash(field: string, value: string, salt: Hex): Hex {
   return keccak256(encodeAbiParameters([{ type: "string" }, { type: "string" }, { type: "bytes32" }], [field, value, salt]));
@@ -24,15 +26,29 @@ function merkleRoot(leaves: Hex[]): Hex {
 }
 
 /**
- * 模擬 L2 KYC（測試網）：正式版由持照 KYC 單位執行證件＋活體辨識。
- * 鏈上只寫入 claimsRoot；欄位原文與 salt 回傳給使用者裝置保存，伺服器不留存。
+ * L2 KYC（測試網模擬持照 KYC 單位）：身分證件＋引導式臉部影像。
+ * 通過後：
+ * 1. 鏈上寫入 L2 等級證明（只存欄位的 Merkle root；原文與 salt 回傳給使用者裝置保存）
+ * 2. 平台為此身分產生一把獨立的「平台備援金鑰」（HSM 託管），並以平台根金鑰授權，
+ *    由使用者的裝置送出 setGuardian 安裝（之後任何裝置或卡片都無法移除）
  */
 export const POST = handle(async (req: Request) => {
   const me = await requireSession();
-  const b = (await req.json()) as { name: string; idNumber: string; birthday: string };
-  if (!b.name || !/^[A-Z][12]\d{8}$/.test(b.idNumber ?? "") || !b.birthday) {
+  const form = await req.formData();
+  const b = {
+    name: String(form.get("name") ?? "").trim().toUpperCase(),
+    idNumber: String(form.get("idNumber") ?? "").trim().toUpperCase(),
+    birthday: String(form.get("birthday") ?? ""),
+  };
+  if (!b.name || !/^[A-Z][12]\d{8}$/.test(b.idNumber) || !b.birthday) {
     throw new HttpError(400, "請填寫姓名、身分證字號（例：A123456789）與生日");
   }
+  const existing = (await read()).kyc[me];
+  if (existing?.idHash && existing.idHash !== kycIdHash(b.idNumber)) {
+    throw new HttpError(403, "此身分已綁定另一份證件，無法更換");
+  }
+  const evidence = await checkEvidence(form);
+
   const fields = { name: b.name, idNumber: b.idNumber, birthday: b.birthday, country: "TW" };
   const leaves = Object.entries(fields).map(([field, value]) => {
     const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
@@ -54,7 +70,14 @@ export const POST = handle(async (req: Request) => {
     args: [me, 2, claimsRoot, expiry, sig],
   });
   await update((s) => {
-    s.kyc[me] = { level: 2, ts: Date.now() };
+    const prev = s.kyc[me];
+    s.kyc[me] = { level: 2, ts: Date.now(), idHash: kycIdHash(b.idNumber), evidence: [...(prev?.evidence ?? []), evidence] };
   });
-  return Response.json({ level: 2, claimsRoot, leaves, txHash: r.transactionHash });
+
+  const onChain = await currentGuardian(me);
+  const guardian =
+    onChain === zeroAddress
+      ? { address: guardianAddress(me), authoritySig: await authorizeGuardian(me, guardianAddress(me)) }
+      : null;
+  return Response.json({ level: 2, claimsRoot, leaves, txHash: r.transactionHash, guardian });
 });

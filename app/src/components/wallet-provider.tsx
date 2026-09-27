@@ -1,10 +1,10 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { erc20Abi, type Address } from "viem";
+import { erc20Abi, zeroAddress, type Address } from "viem";
 import { DEPLOYMENT } from "@/lib/config";
 import { attestationRegistryAbi, keyringValidatorAbi, recoveryValidatorAbi } from "@/lib/contracts/abis";
-import { api, loadWallet, publicClient, type LocalWallet } from "@/lib/client";
+import { api, clearWallet, loadWallet, publicClient, type LocalWallet } from "@/lib/client";
 import { encode1271 } from "@/lib/userop";
 import { signWithPasskey } from "@/lib/webauthn";
 
@@ -15,6 +15,8 @@ type ChainState = {
   masterMode: boolean;
   level: number;
   recoveryPending: boolean;
+  /** 平台備援金鑰（KYC 通過後安裝；零地址＝尚未啟用） */
+  guardian: Address | null;
   loaded: boolean;
 };
 
@@ -27,9 +29,14 @@ type Ctx = {
   refresh: () => Promise<void>;
   refreshSession: () => Promise<void>;
   unlock: () => Promise<void>;
+  /** 登出此裝置：清除 session 與本機錢包資料（金鑰仍在裝置上，之後可直接以 Passkey 登入） */
+  logout: () => Promise<void>;
+  /** 餘額預設隱藏；顯示只在本次開啟期間有效，重新整理或重新開啟後又會隱藏 */
+  showBalance: boolean;
+  setShowBalance: (v: boolean) => void;
 };
 
-const EMPTY: ChainState = { deployed: false, twdc: 0n, bolt: 0n, masterMode: false, level: 0, recoveryPending: false, loaded: false };
+const EMPTY: ChainState = { deployed: false, twdc: 0n, bolt: 0n, masterMode: false, level: 0, recoveryPending: false, guardian: null, loaded: false };
 
 const WalletCtx = createContext<Ctx | null>(null);
 
@@ -64,6 +71,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Address | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [chain, setChain] = useState<ChainState>(EMPTY);
+  const [showBalance, setShowBalance] = useState(false);
 
   const refreshSession = useCallback(async () => {
     const me = await api<{ address: Address | null; handle: string | null }>("/api/auth/me").catch(() => ({ address: null, handle: null }));
@@ -75,13 +83,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (!wallet || !DEPLOYMENT.deployed) return;
     const a = wallet.address;
     try {
-      const [code, twdc, bolt, st, att, pending] = await Promise.all([
+      const [code, twdc, bolt, st, att, pending, guardian] = await Promise.all([
         publicClient.getCode({ address: a }),
         publicClient.readContract({ address: DEPLOYMENT.twdc, abi: erc20Abi, functionName: "balanceOf", args: [a] }),
         publicClient.getBalance({ address: a }),
         publicClient.readContract({ address: DEPLOYMENT.keyring, abi: keyringValidatorAbi, functionName: "accountState", args: [a] }),
         publicClient.readContract({ address: DEPLOYMENT.attestation, abi: attestationRegistryAbi, functionName: "levelOf", args: [a] }),
         publicClient.readContract({ address: DEPLOYMENT.recovery, abi: recoveryValidatorAbi, functionName: "isPending", args: [a] }),
+        publicClient.readContract({ address: DEPLOYMENT.recovery, abi: recoveryValidatorAbi, functionName: "guardianOf", args: [a] }),
       ]);
       setChain({
         deployed: !!code && code !== "0x",
@@ -90,6 +99,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         masterMode: st[1] > 0,
         level: att,
         recoveryPending: pending,
+        guardian: guardian === zeroAddress ? null : guardian,
         loaded: true,
       });
     } catch (e) {
@@ -106,6 +116,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     await refreshSession();
   }, [wallet, refreshSession]);
 
+  const logout = useCallback(async () => {
+    await api("/api/auth/logout", {}).catch(() => undefined);
+    setSession(null);
+    setHandle(null);
+    setChain(EMPTY);
+    setShowBalance(false);
+    clearWallet();
+  }, []);
+
   useEffect(() => {
     // 首次載入時同步伺服器 session 與鏈上狀態（外部系統同步）
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -120,8 +139,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const value = useMemo(
-    () => ({ wallet, hydrated, session, handle, chain, refresh, refreshSession, unlock }),
-    [wallet, hydrated, session, handle, chain, refresh, refreshSession, unlock],
+    () => ({ wallet, hydrated, session, handle, chain, refresh, refreshSession, unlock, logout, showBalance, setShowBalance }),
+    [wallet, hydrated, session, handle, chain, refresh, refreshSession, unlock, logout, showBalance],
   );
   return <WalletCtx.Provider value={value}>{children}</WalletCtx.Provider>;
 }

@@ -5,7 +5,7 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 /// @title AttestationRegistry
-/// @notice 身分等級證明（L1 手機、L2 KYC）與發卡方清單。
+/// @notice 身分等級證明（L1 手機、L2 KYC）、發卡方清單與平台備援金鑰的根授權。
 ///         鏈上只存 claimsRoot（Merkle root），個資原文只在使用者裝置。
 /// @dev KYC 單位與發卡方名單本質上需要治理，由 governance 管理（可設為 Boltchain 治理合約）。
 contract AttestationRegistry {
@@ -23,10 +23,13 @@ contract AttestationRegistry {
     address public immutable governance;
     mapping(address => bool) public isKycSigner;
     mapping(address => bool) public isCardIssuer;
+    /// @notice 平台根金鑰（離線保存）：授權安裝、輪替各帳戶的平台備援金鑰
+    mapping(address => bool) public isGuardianAuthority;
     mapping(address account => Attestation) public attestations;
 
     event KycSignerSet(address indexed signer, bool allowed);
     event CardIssuerSet(address indexed issuer, bool allowed);
+    event GuardianAuthoritySet(address indexed signer, bool allowed);
     event Attested(address indexed account, uint8 level, uint48 expiry, bytes32 claimsRoot, address signer);
 
     error OnlyGovernance();
@@ -49,6 +52,11 @@ contract AttestationRegistry {
     function setCardIssuer(address issuer, bool allowed) external onlyGovernance {
         isCardIssuer[issuer] = allowed;
         emit CardIssuerSet(issuer, allowed);
+    }
+
+    function setGuardianAuthority(address signer, bool allowed) external onlyGovernance {
+        isGuardianAuthority[signer] = allowed;
+        emit GuardianAuthoritySet(signer, allowed);
     }
 
     function attestationDigest(address account, uint8 level, bytes32 claimsRoot, uint48 expiry)

@@ -22,7 +22,8 @@ enum OpKind {
     MODULE, // 15 安裝／移除模組
     DEVICE, // 16 聊天裝置金鑰
     RECOVERY_CANCEL, // 17
-    RECOVERY // 18 R1 恢復（卡片確認新增裝置）
+    RECOVERY, // 18 恢復（卡片確認新增裝置）
+    GUARDIAN_SET // 19 安裝平台備援金鑰（KYC 通過後）
 }
 
 struct TxSummary {

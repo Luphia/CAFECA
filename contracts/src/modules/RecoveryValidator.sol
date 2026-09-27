@@ -14,61 +14,37 @@ import {
     VALIDATION_FAILED,
     ERC1271_INVALID
 } from "../interfaces/IERC7579.sol";
-import {IOidcVerifier, OidcNonce} from "../interfaces/IOidcVerifier.sol";
 import {ExecLib} from "../lib/ExecLib.sol";
-import {OpKind, TxSummary, TxSummaryLib} from "../lib/TxSummary.sol";
-import {JwksRegistry} from "../registry/JwksRegistry.sol";
 
 interface IKeyringForRecovery {
     function applyRecovery(address account, bytes32 qx, bytes32 qy, bytes32 rpIdHash, bool wipe) external;
-    function verifyMasterSignature(address account, bytes32 challenge, bytes calldata sigData, bytes32 expectedCtxd)
-        external
-        view
-        returns (bool);
-    function masterCount(address account) external view returns (uint256);
     function keyIdOf(bytes32 qx, bytes32 qy) external pure returns (bytes32);
+    function masterCount(address account) external view returns (uint256);
 }
 
-interface IKycSignerRegistry {
-    function isKycSigner(address signer) external view returns (bool);
+interface IGuardianAuthorityRegistry {
+    function isGuardianAuthority(address signer) external view returns (bool);
 }
 
-/// @title RecoveryValidator
-/// @notice OIDC（Google／Apple）僅作為恢復憑證，三條路徑：
-///         R1 OIDC＋卡片指紋：立即新增 DAILY 金鑰
-///         R2 OIDC＋發卡方重新 KYC 簽章：48 小時後清除所有金鑰並新增 DAILY
-///         R3 僅 OIDC：7 天後清除所有金鑰並新增 DAILY（主金鑰模式停用）
-/// @dev 設計規格 §5。驗證階段不讀 TIMESTAMP：冷卻期、JWT 期限、JWKS 期限、時間鎖
-///      都以 validationData 的 validAfter／validUntil 交給 EntryPoint 檢查。
-///      讀取 JwksRegistry 不屬於帳戶關聯儲存，需 CAFECA bundler 放寬 ERC-7562（規格 §12）。
+/// @title RecoveryValidator（平台備援金鑰）
+/// @notice 使用者以身分證件＋引導式臉部影像完成 KYC 後，平台為這個身分產生一把「備援金鑰」並託管在 HSM。
+///         備援金鑰等級高於裝置金鑰：裝置金鑰與卡片都無法移除或更換它，但它能做的事被刻意限縮為一件——
+///         「在時間鎖之後，以一把新裝置金鑰取代所有裝置金鑰」。
+///
+///         被盜風險的緩解（規格 §5.3）：
+///         1. 權限最小化：不能轉帳、不能調額度、不能動通道或模組、不能移除卡片。
+///         2. 時間鎖：48 小時；已綁卡的帳戶 7 天（有卡的人可以用卡片立即恢復，不需要平台）。
+///            期間主帳戶轉出凍結，所有裝置與卡片都會收到通知，任何一把裝置金鑰或卡片都能取消。
+///         3. 冷卻：取消後 7 天內不能再發起。
+///         4. 爭議升級：若裝置金鑰取消了恢復（可能是本人，也可能是盜用裝置的人），平台人工複核後可發起
+///            「升級恢復」（7 天），此時只有卡片能取消。
+///         5. 金鑰輪替：每個帳戶一把獨立的備援金鑰（單一金鑰外洩只影響一個帳戶）；若外洩，
+///            由離線保存的平台根金鑰（guardian authority）直接輪替或撤銷，並清除進行中的恢復。
+/// @dev 驗證階段不讀 TIMESTAMP：冷卻與時間鎖以 validationData 的 validAfter 交給 EntryPoint 檢查。
 contract RecoveryValidator is IValidator {
-    enum Path {
-        NONE,
-        R1_CARD,
-        R2_REKYC,
-        R3_OIDC_ONLY
-    }
-
-    struct OidcProof {
-        bytes32 idCommitment;
-        bytes32 jwksKeyHash;
-        uint64 expiry;
-        bytes proof;
-    }
-
-    struct RecoveryRequest {
-        Path path;
-        bytes32 qx;
-        bytes32 qy;
-        bytes32 rpIdHash;
-        OidcProof oidc;
-        bytes kycSig; // R2：KYC 單位簽章
-        // R1 的卡片簽章放在 UserOp.signature（KeyringValidator.SignatureData），
-        // 因為它要簽 userOpHash，而 userOpHash 涵蓋 callData，不能放在 callData 裡。
-    }
-
     struct Pending {
-        Path path;
+        bool active;
+        bool escalated;
         uint48 readyAt;
         bytes32 qx;
         bytes32 qy;
@@ -76,49 +52,47 @@ contract RecoveryValidator is IValidator {
     }
 
     struct State {
+        address guardian;
         uint48 cooldownUntil;
-        uint64 recoveryNonce;
+        uint48 disputedAt;
+        uint64 nonce;
     }
 
-    uint48 public constant R2_DELAY = 48 hours;
-    uint48 public constant R3_DELAY = 7 days;
+    uint48 public constant DELAY = 48 hours;
+    uint48 public constant DELAY_WITH_CARD = 7 days;
+    uint48 public constant DELAY_ESCALATED = 7 days;
     uint48 public constant COOLDOWN = 7 days;
+    uint48 public constant DISPUTE_WINDOW = 30 days;
 
     IKeyringForRecovery public immutable keyring;
-    JwksRegistry public immutable jwks;
-    IOidcVerifier public immutable verifier;
-    IKycSignerRegistry public immutable kycRegistry;
+    IGuardianAuthorityRegistry public immutable authority;
 
-    mapping(bytes32 idCommitment => mapping(address account => bool)) public isIdentityOf;
     mapping(address account => Pending) public pending;
     mapping(address account => State) public state;
 
-    event IdentityLinked(address indexed account, bytes32 indexed idCommitment);
-    event RecoveryInitiated(address indexed account, Path path, bytes32 newKeyId, uint48 readyAt);
-    event RecoveryExecuted(address indexed account, Path path, bytes32 newKeyId);
-    event RecoveryCancelled(address indexed account);
+    event GuardianSet(address indexed account, address guardian);
+    event GuardianRotated(address indexed account, address oldGuardian, address newGuardian);
+    event RecoveryInitiated(address indexed account, bytes32 newKeyId, uint48 readyAt, bool escalated);
+    event RecoveryExecuted(address indexed account, bytes32 newKeyId);
+    event RecoveryCancelled(address indexed account, bool byGuardian);
 
     error AlreadyPending();
     error NoPendingRecovery();
     error NotReady();
     error InCooldown();
-    error InvalidPath();
+    error NoGuardian();
+    error GuardianAlreadySet();
+    error InvalidAuthority();
+    error NotDisputed();
 
-    constructor(address keyring_, address jwks_, address verifier_, address kycRegistry_) {
+    constructor(address keyring_, address authority_) {
         keyring = IKeyringForRecovery(keyring_);
-        jwks = JwksRegistry(jwks_);
-        verifier = IOidcVerifier(verifier_);
-        kycRegistry = IKycSignerRegistry(kycRegistry_);
+        authority = IGuardianAuthorityRegistry(authority_);
     }
 
     // ───────────────────────── 模組 ─────────────────────────
 
-    /// @param data abi.encode(bytes32 idCommitment)
-    function onInstall(bytes calldata data) external {
-        bytes32 idc = abi.decode(data, (bytes32));
-        isIdentityOf[idc][msg.sender] = true;
-        emit IdentityLinked(msg.sender, idc);
-    }
+    function onInstall(bytes calldata) external {}
 
     function onUninstall(bytes calldata) external pure {
         revert("Recovery: cannot uninstall");
@@ -129,12 +103,14 @@ contract RecoveryValidator is IValidator {
     }
 
     function isValidSignatureWithSender(address, bytes32, bytes calldata) external pure returns (bytes4) {
-        return ERC1271_INVALID; // 恢復憑證不能用來做一般簽章
+        return ERC1271_INVALID; // 備援金鑰不能用來做一般簽章（登入、Permit 等）
     }
 
     // ───────────────────────── 驗證 ─────────────────────────
 
-    /// @dev 只允許 execute(single) 呼叫本合約的 initiateRecovery 或 executeRecovery
+    /// @dev 只允許 execute(single) 呼叫本合約：
+    ///      - initiateRecovery / guardianCancel：UserOp.signature = 備援金鑰對 userOpHash 的 ECDSA 簽章
+    ///      - executeRecovery：時間鎖到期後任何人可送（signature 可為空）
     function validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash) external view returns (uint256) {
         address account = userOp.sender;
         if (userOp.callData.length < 4 || bytes4(userOp.callData[0:4]) != IERC7579Execution.execute.selector) {
@@ -142,139 +118,138 @@ contract RecoveryValidator is IValidator {
         }
         (bytes32 mode, bytes memory ec) = abi.decode(userOp.callData[4:], (bytes32, bytes));
         if (mode[0] != CALLTYPE_SINGLE) return VALIDATION_FAILED;
-        (address target, uint256 value, bytes memory data) = _decodeSingle(ec);
-        if (target != address(this) || value != 0) return VALIDATION_FAILED;
+        Execution memory e = ExecLib.decodeSingleMem(ec);
+        if (e.target != address(this) || e.value != 0) return VALIDATION_FAILED;
 
-        bytes4 sel = ExecLib.selector(data);
+        bytes4 sel = ExecLib.selector(e.callData);
+        Pending memory p = pending[account];
         if (sel == this.executeRecovery.selector) {
-            address who = abi.decode(ExecLib.args(data), (address));
-            Pending memory p = pending[account];
-            if (who != account || p.path == Path.NONE) return VALIDATION_FAILED;
+            address who = abi.decode(ExecLib.args(e.callData), (address));
+            if (who != account || !p.active) return VALIDATION_FAILED;
             return _packValidationData(false, 0, p.readyAt);
         }
+
+        State memory st = state[account];
+        if (st.guardian == address(0)) return VALIDATION_FAILED;
+        (address signer, ECDSA.RecoverError err,) =
+            ECDSA.tryRecover(MessageHashUtils.toEthSignedMessageHash(userOpHash), userOp.signature);
+        if (err != ECDSA.RecoverError.NoError || signer != st.guardian) return VALIDATION_FAILED;
+
+        if (sel == this.guardianCancel.selector) {
+            return p.active ? 0 : VALIDATION_FAILED;
+        }
         if (sel != this.initiateRecovery.selector) return VALIDATION_FAILED;
-
-        RecoveryRequest memory req = abi.decode(ExecLib.args(data), (RecoveryRequest));
-        if (pending[account].path != Path.NONE) return VALIDATION_FAILED;
-        (bool ok, uint48 validUntil) = _checkRequest(account, req, userOpHash, userOp.signature);
-        if (!ok) return VALIDATION_FAILED;
-        return _packValidationData(false, validUntil, state[account].cooldownUntil);
+        if (p.active) return VALIDATION_FAILED;
+        (,,, bool escalated) = abi.decode(ExecLib.args(e.callData), (bytes32, bytes32, bytes32, bool));
+        if (escalated && st.disputedAt == 0) return VALIDATION_FAILED;
+        return _packValidationData(false, 0, escalated ? 0 : st.cooldownUntil);
     }
 
-    function _checkRequest(address account, RecoveryRequest memory req, bytes32 userOpHash, bytes calldata masterSig)
-        internal
-        view
-        returns (bool ok, uint48 validUntil)
-    {
-        OidcProof memory o = req.oidc;
-        if (!isIdentityOf[o.idCommitment][account]) return (false, 0);
+    // ───────────────────────── 備援金鑰的安裝與輪替 ─────────────────────────
 
-        uint48 jwksUntil = jwks.validUntilOf(o.jwksKeyHash);
-        if (jwksUntil == 0) return (false, 0);
-        validUntil = o.expiry < jwksUntil ? uint48(o.expiry) : jwksUntil;
-
-        uint256 nonce = recoveryNonce(account, req.qx, req.qy, req.rpIdHash, state[account].recoveryNonce, o.expiry);
-        uint256[4] memory pub =
-            [uint256(o.idCommitment), uint256(o.jwksKeyHash), nonce, uint256(o.expiry)];
-        if (!verifier.verify(pub, o.proof)) return (false, 0);
-
-        if (req.path == Path.R1_CARD) {
-            bytes32 expected = TxSummaryLib.single(recoverySummary(account, req.qx, req.qy));
-            if (masterSig.length == 0) return (false, 0);
-            try keyring.verifyMasterSignature(account, userOpHash, masterSig, expected) returns (bool v) {
-                ok = v;
-            } catch {
-                ok = false;
-            }
-        } else if (req.path == Path.R2_REKYC) {
-            address signer = ECDSA.recover(
-                rekycDigest(account, req.qx, req.qy, req.rpIdHash, state[account].recoveryNonce), req.kycSig
-            );
-            ok = kycRegistry.isKycSigner(signer);
-        } else if (req.path == Path.R3_OIDC_ONLY) {
-            ok = keyring.masterCount(account) == 0; // 主金鑰模式停用 R3
-        } else {
-            ok = false;
-        }
+    /// @notice KYC 通過後由使用者的裝置金鑰送出（msg.sender = 身分帳戶）。只能安裝一次，之後無法由帳戶更換或移除。
+    /// @param authoritySig 平台根金鑰對 guardianDigest(account, guardian, nonce) 的簽章，證明這是平台託管的金鑰
+    function setGuardian(address guardian, bytes calldata authoritySig) external {
+        State storage st = state[msg.sender];
+        if (st.guardian != address(0)) revert GuardianAlreadySet();
+        if (guardian == address(0)) revert NoGuardian();
+        _checkAuthority(msg.sender, guardian, st.nonce, authoritySig);
+        st.guardian = guardian;
+        st.nonce++;
+        emit GuardianSet(msg.sender, guardian);
     }
 
-    // ───────────────────────── 執行 ─────────────────────────
-
-    /// @dev msg.sender = 身分帳戶（經本 validator 驗證過的 UserOp）
-    function initiateRecovery(RecoveryRequest calldata req) external {
-        address account = msg.sender;
-        if (pending[account].path != Path.NONE) revert AlreadyPending();
+    /// @notice 平台根金鑰輪替（備援金鑰疑似外洩）或撤銷（newGuardian = 0，使用者重新驗證後申請停用）。
+    ///         任何人可代送，只看根金鑰簽章；會一併清除進行中的恢復。
+    function rotateGuardian(address account, address newGuardian, bytes calldata authoritySig) external {
         State storage st = state[account];
-        if (block.timestamp < st.cooldownUntil) revert InCooldown();
-        st.recoveryNonce++;
-        st.cooldownUntil = uint48(block.timestamp) + COOLDOWN;
-
-        bytes32 newKeyId = keyring.keyIdOf(req.qx, req.qy);
-        if (req.path == Path.R1_CARD) {
-            keyring.applyRecovery(account, req.qx, req.qy, req.rpIdHash, false);
-            emit RecoveryInitiated(account, req.path, newKeyId, uint48(block.timestamp));
-            emit RecoveryExecuted(account, req.path, newKeyId);
-            return;
+        if (st.guardian == address(0)) revert NoGuardian();
+        _checkAuthority(account, newGuardian, st.nonce, authoritySig);
+        emit GuardianRotated(account, st.guardian, newGuardian);
+        st.guardian = newGuardian;
+        st.nonce++;
+        if (pending[account].active) {
+            delete pending[account];
+            emit RecoveryCancelled(account, true);
         }
-        uint48 delay;
-        if (req.path == Path.R2_REKYC) delay = R2_DELAY;
-        else if (req.path == Path.R3_OIDC_ONLY) delay = R3_DELAY;
-        else revert InvalidPath();
-
-        uint48 readyAt = uint48(block.timestamp) + delay;
-        pending[account] = Pending(req.path, readyAt, req.qx, req.qy, req.rpIdHash);
-        emit RecoveryInitiated(account, req.path, newKeyId, readyAt);
     }
 
-    /// @notice 時間鎖到期後任何人可觸發
+    function _checkAuthority(address account, address guardian, uint64 n, bytes calldata sig) internal view {
+        (address signer, ECDSA.RecoverError err,) = ECDSA.tryRecover(guardianDigest(account, guardian, n), sig);
+        if (err != ECDSA.RecoverError.NoError || !authority.isGuardianAuthority(signer)) revert InvalidAuthority();
+    }
+
+    // ───────────────────────── 恢復 ─────────────────────────
+
+    /// @notice 備援金鑰發起恢復（msg.sender = 身分帳戶，經本 validator 驗證）
+    /// @param escalated 爭議升級：僅在裝置金鑰取消過恢復後的 30 天內，且平台人工複核通過才會使用
+    function initiateRecovery(bytes32 qx, bytes32 qy, bytes32 rpIdHash, bool escalated) external {
+        address account = msg.sender;
+        State storage st = state[account];
+        if (st.guardian == address(0)) revert NoGuardian();
+        if (pending[account].active) revert AlreadyPending();
+        uint48 delay;
+        if (escalated) {
+            if (st.disputedAt == 0 || block.timestamp > uint256(st.disputedAt) + DISPUTE_WINDOW) revert NotDisputed();
+            st.disputedAt = 0;
+            delay = DELAY_ESCALATED;
+        } else {
+            if (block.timestamp < st.cooldownUntil) revert InCooldown();
+            delay = keyring.masterCount(account) > 0 ? DELAY_WITH_CARD : DELAY;
+        }
+        st.cooldownUntil = uint48(block.timestamp) + COOLDOWN;
+        uint48 readyAt = uint48(block.timestamp) + delay;
+        pending[account] = Pending(true, escalated, readyAt, qx, qy, rpIdHash);
+        emit RecoveryInitiated(account, keyring.keyIdOf(qx, qy), readyAt, escalated);
+    }
+
+    /// @notice 時間鎖到期後任何人可觸發：清除所有裝置金鑰，安裝新裝置金鑰（卡片保留）
     function executeRecovery(address account) external {
         Pending memory p = pending[account];
-        if (p.path == Path.NONE) revert NoPendingRecovery();
+        if (!p.active) revert NoPendingRecovery();
         if (block.timestamp < p.readyAt) revert NotReady();
         delete pending[account];
+        state[account].disputedAt = 0;
         keyring.applyRecovery(account, p.qx, p.qy, p.rpIdHash, true);
-        emit RecoveryExecuted(account, p.path, keyring.keyIdOf(p.qx, p.qy));
+        emit RecoveryExecuted(account, keyring.keyIdOf(p.qx, p.qy));
     }
 
-    /// @notice 任何現存金鑰可取消（經 KeyringValidator 驗證），取消後冷卻 7 天
+    /// @notice 裝置金鑰或卡片取消（經 KeyringValidator 驗證；升級恢復只接受卡片）。取消後冷卻 7 天。
     function cancelRecovery() external {
-        if (pending[msg.sender].path == Path.NONE) revert NoPendingRecovery();
+        Pending memory p = pending[msg.sender];
+        if (!p.active) revert NoPendingRecovery();
         delete pending[msg.sender];
-        state[msg.sender].cooldownUntil = uint48(block.timestamp) + COOLDOWN;
-        emit RecoveryCancelled(msg.sender);
+        State storage st = state[msg.sender];
+        st.cooldownUntil = uint48(block.timestamp) + COOLDOWN;
+        if (!p.escalated) st.disputedAt = uint48(block.timestamp);
+        emit RecoveryCancelled(msg.sender, false);
     }
 
-    // ───────────────────────── 查詢與雜湊 ─────────────────────────
+    /// @notice 平台自行撤回（例如使用者來電說明是誤操作）
+    function guardianCancel() external {
+        if (!pending[msg.sender].active) revert NoPendingRecovery();
+        delete pending[msg.sender];
+        emit RecoveryCancelled(msg.sender, true);
+    }
+
+    // ───────────────────────── 查詢 ─────────────────────────
 
     function isPending(address account) external view returns (bool) {
-        return pending[account].path != Path.NONE;
+        return pending[account].active;
     }
 
-    function recoveryNonce(address account, bytes32 qx, bytes32 qy, bytes32 rpIdHash, uint64 n, uint64 expiry)
-        public
-        view
-        returns (uint256)
-    {
-        return OidcNonce.toField(keccak256(abi.encode("recover", block.chainid, account, qx, qy, rpIdHash, n, expiry)));
+    function isEscalated(address account) external view returns (bool) {
+        Pending memory p = pending[account];
+        return p.active && p.escalated;
     }
 
-    function rekycDigest(address account, bytes32 qx, bytes32 qy, bytes32 rpIdHash, uint64 n)
-        public
-        view
-        returns (bytes32)
-    {
+    function guardianOf(address account) external view returns (address) {
+        return state[account].guardian;
+    }
+
+    function guardianDigest(address account, address guardian, uint64 n) public view returns (bytes32) {
         return MessageHashUtils.toEthSignedMessageHash(
-            keccak256(abi.encode("CAFECA_REKYC", block.chainid, account, qx, qy, rpIdHash, n))
+            keccak256(abi.encode("CAFECA_GUARDIAN", block.chainid, address(this), account, guardian, n))
         );
-    }
-
-    /// @notice R1 時卡片螢幕應顯示的摘要
-    function recoverySummary(address account, bytes32 qx, bytes32 qy) public view returns (TxSummary memory) {
-        return TxSummary(uint8(OpKind.RECOVERY), block.chainid, address(0), 0, account, keyring.keyIdOf(qx, qy));
-    }
-
-    function _decodeSingle(bytes memory ec) internal pure returns (address, uint256, bytes memory) {
-        Execution memory e = ExecLib.decodeSingleMem(ec);
-        return (e.target, e.value, e.callData);
     }
 }

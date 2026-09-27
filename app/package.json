@@ -3,18 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 10002",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 10002",
     "lint": "eslint",
     "deploy": "tsx scripts/deploy.ts",
-    "typecheck": "next typegen && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "sync-abis": "node scripts/sync-abis.mjs"
   },
   "dependencies": {
     "@noble/curves": "^1.9.1",
     "@noble/hashes": "^1.8.0",
     "jose": "^6.2.12",
+    "jsqr": "^1.4.0",
     "next": "16.3.6",
     "qrcode": "^1.5.4",
     "react": "19.2.8",

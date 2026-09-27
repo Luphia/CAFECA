@@ -57,6 +57,13 @@ function ChatBody() {
     setDeviceReady(list.some((d) => d.deviceId === local.deviceId));
   }, [wallet]);
 
+  // 由 id 深連結開啟：預填聊天對象
+  useEffect(() => {
+    const w = new URLSearchParams(window.location.search).get("with");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (w) setNewPeer(w);
+  }, []);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     checkDevice().catch(() => setDeviceReady(false));

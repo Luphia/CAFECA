@@ -87,13 +87,18 @@ export type PasskeyInfo = {
   label: string;
 };
 
-export async function registerPasskey(userName: string, label: string): Promise<PasskeyInfo> {
+/**
+ * 在此裝置建立 FIDO2 金鑰（ES256）。
+ * @param userId 身分帳戶地址（已知時傳入，存在 passkey 的 userHandle，登入時可直接找到帳戶）；
+ *               建立新身分時地址由公鑰決定、事先未知，登入時改由簽章還原公鑰推算地址
+ */
+export async function registerPasskey(userName: string, label: string, userId?: Uint8Array): Promise<PasskeyInfo> {
   if (!window.PublicKeyCredential) throw new Error("此瀏覽器不支援 Passkey");
   const cred = (await navigator.credentials.create({
     publicKey: {
       rp: { name: "CAFECA", id: rpId() },
       user: {
-        id: crypto.getRandomValues(new Uint8Array(16)),
+        id: (userId ?? crypto.getRandomValues(new Uint8Array(16))) as BufferSource,
         name: userName,
         displayName: userName,
       },

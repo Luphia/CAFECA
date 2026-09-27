@@ -47,11 +47,30 @@ export type Store = {
   agents: Record<string, AgentRecord>; // id → record
   visa: VisaAuth[];
   visaChannels: Record<string, string>; // owner → channel
-  kyc: Record<string, { level: number; ts: number }>;
+  /** 模擬 KYC 單位保存的紀錄：身分證字號只存 HMAC，用於重新 KYC 恢復時比對本人 */
+  kyc: Record<string, KycRecord>;
+  /** 活體驗證挑戰（一次性） */
+  kycChallenges: Record<string, { code: string; exp: number; used: boolean }>;
+  /** 實體卡訂單：以鏈上付款交易為憑 */
+  cardOrders: Record<string, CardOrder>;
+  /** 裝置配對 session：新裝置只知道自己的公鑰，既有裝置確認後把身分地址回填 */
+  pairings: Record<string, Pairing>;
 };
 
+export type Pairing = { qx: string; qy: string; rpIdHash: string; name: string; exp: number; createdAt: number; address?: string };
+
+export type KycRecord = {
+  level: number;
+  ts: number;
+  idHash?: string;
+  /** 證件影像與臉部影像的 sha256（原型不保存原始生物特徵；正式版由持照 KYC 單位依法保存） */
+  evidence?: { idImage: string; faceVideo: string; seconds: number; challenge: string }[];
+};
+
+export type CardOrder = { owner: string; txHash: string; amount: string; paidAt: number; used: boolean; replaces?: string; issuedFor?: string };
+
 const FILE = path.join(process.cwd(), "data", "store.json");
-const EMPTY: Store = { handles: {}, profiles: {}, messages: [], agents: {}, visa: [], visaChannels: {}, kyc: {} };
+const EMPTY: Store = { handles: {}, profiles: {}, messages: [], agents: {}, visa: [], visaChannels: {}, kyc: {}, kycChallenges: {}, cardOrders: {}, pairings: {} };
 
 let lock: Promise<unknown> = Promise.resolve();
 

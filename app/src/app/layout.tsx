@@ -4,7 +4,7 @@ import { Providers } from "@/components/providers";
 
 export const metadata: Metadata = {
   title: "CAFECA 數位身分錢包",
-  description: "以 Google／Apple 登入、FIDO2 金鑰操作的數位身分錢包，整合聊天、支付與 AI 子錢包（Boltchain 測試網）",
+  description: "以 FIDO2 金鑰為根的數位身分證與錢包，整合聊天、支付與 AI 子錢包（Boltchain 測試網）",
 };
 
 export const viewport: Viewport = {

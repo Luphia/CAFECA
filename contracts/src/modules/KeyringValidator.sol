@@ -25,11 +25,14 @@ import {ChannelPolicy, IChannelManager, IChannelControl} from "../channels/Chann
 
 interface IRecoveryStatus {
     function isPending(address account) external view returns (bool);
+    function isEscalated(address account) external view returns (bool);
     function cancelRecovery() external;
+    function setGuardian(address guardian, bytes calldata authoritySig) external;
 }
 
 interface ICardIssuerRegistry {
     function isCardIssuer(address issuer) external view returns (bool);
+    function levelOf(address account) external view returns (uint8);
 }
 
 interface IDeviceDirectory {
@@ -45,9 +48,16 @@ interface INftApproval {
 }
 
 /// @title KeyringValidator
-/// @notice 身分帳戶的主要 validator：管理 FIDO2 金鑰（MASTER＝CAFECA 卡、DAILY＝手機 passkey），
-///         依「權限矩陣」判斷每個 UserOp 需要哪一級金鑰，並對 MASTER 簽章驗證卡片螢幕的 ctxd。
-/// @dev 設計規格 §4、§9、§10。
+/// @notice 身分帳戶的主要 validator：管理 FIDO2 金鑰，依「權限矩陣」判斷每個 UserOp 需要哪一級金鑰，
+///         並對卡片簽章驗證卡片螢幕的 ctxd。
+///
+///         金鑰等級（v0.3）：
+///         - DAILY＝裝置金鑰：第一把在建立身分時註冊，之後任何裝置金鑰都能立即加入另一台裝置，
+///           所有裝置金鑰等級相同、可互相新增與移除（共管）。
+///         - MASTER＝CAFECA 實體卡：須完成 L2 KYC、付費購買，由發卡方簽署證明後綁定。
+///           裝置金鑰無法移除卡片（也不能排程移除），只有卡片自己，或補發新卡時由發卡方證明汰換。
+///         - 平台備援金鑰不在本合約，由 RecoveryValidator 管理（KYC 通過後安裝，同樣不可被裝置或卡片移除）。
+/// @dev 設計規格 §4、§5、§9、§10。
 ///      儲存一律以帳戶為最內層 key（ERC-7562 associated storage）。
 ///      注意：每日額度與時間鎖在驗證階段讀取 block.timestamp，需 CAFECA bundler 放寬 ERC-7562
 ///      的 TIMESTAMP 規則（見規格 §12 待決事項），或改以執行期 hook 實作。
@@ -118,6 +128,7 @@ contract KeyringValidator is IValidator {
     struct Classified {
         TxSummary s;
         Req r;
+        bytes32 signer; // 非零時只能由這把金鑰簽（例如卡片只能自己移除自己）
         bool frozenOk; // 恢復進行中仍允許
         address token; // 需計入額度的代幣
         uint256 amount;
@@ -127,6 +138,7 @@ contract KeyringValidator is IValidator {
     struct Assessment {
         Req req;
         bool frozenOk;
+        bytes32 requiredSigner;
         bytes32 consumeSchedule;
         TxSummary[] summaries;
         address[] spendTokens;
@@ -137,7 +149,7 @@ contract KeyringValidator is IValidator {
     // ───────────────────────── 常數與不可變設定 ─────────────────────────
 
     uint48 public constant DELAY_DAILY = 24 hours;
-    uint48 public constant DELAY_REMOVE_MASTER = 72 hours;
+    uint8 public constant CARD_MIN_LEVEL = 2; // 購買卡片需完成 L2 KYC
     uint48 public constant DELAY_MODULE = 72 hours;
     uint48 public constant WINDOW = 24 hours;
 
@@ -175,6 +187,9 @@ contract KeyringValidator is IValidator {
     error NotReady();
     error OnlyRecovery();
     error CannotUninstall();
+    error CardNotRemovable();
+    error KycRequired();
+    error NotACard();
     error ScheduleViaInstallModule();
 
     constructor(
@@ -234,6 +249,7 @@ contract KeyringValidator is IValidator {
         // 3. 依權限矩陣分類
         Assessment memory a = _assess(account, userOp.callData);
         if (a.req == Req.REJECT) return VALIDATION_FAILED;
+        if (a.requiredSigner != bytes32(0) && a.requiredSigner != sd.keyId) return VALIDATION_FAILED;
         if (a.req == Req.MASTER) {
             if (k.keyClass != KeyClass.MASTER) return VALIDATION_FAILED;
             (bool present, bytes32 ctxd) = WebAuthnLib.extractCtxd(sd.sig.authenticatorData);
@@ -283,6 +299,10 @@ contract KeyringValidator is IValidator {
             for (uint256 i = 0; i < execs.length; i++) {
                 Classified memory c = _classify(account, execs[i], master);
                 a.summaries[i] = c.s;
+                if (c.signer != bytes32(0)) {
+                    if (a.requiredSigner != bytes32(0) && a.requiredSigner != c.signer) c.r = Req.REJECT;
+                    a.requiredSigner = c.signer;
+                }
                 a.req = _combine(a.req, c.r);
                 if (!c.frozenOk) a.frozenOk = false;
                 if (c.forceOver) over = true;
@@ -341,6 +361,14 @@ contract KeyringValidator is IValidator {
         if (e.target == recovery) {
             if (fsel == IRecoveryStatus.cancelRecovery.selector) {
                 c.s.kind = uint8(OpKind.RECOVERY_CANCEL);
+                c.frozenOk = true;
+                // 平台人工複核後的「升級恢復」只能由卡片取消，避免已被盜的裝置金鑰無限期阻擋本人恢復
+                if (IRecoveryStatus(recovery).isEscalated(account)) c.r = master ? Req.MASTER : Req.REJECT;
+            } else if (fsel == IRecoveryStatus.setGuardian.selector) {
+                // 安裝平台備援金鑰：須附平台授權簽章（執行期驗證），且只能安裝一次
+                (address guardian,) = abi.decode(ExecLib.args(e.callData), (address, bytes));
+                c.s.kind = uint8(OpKind.GUARDIAN_SET);
+                c.s.counterparty = guardian;
                 c.frozenOk = true;
             } else {
                 c.r = Req.REJECT;
@@ -423,22 +451,26 @@ contract KeyringValidator is IValidator {
         c.r = Req.DAILY;
 
         if (fsel == this.addDailyKey.selector) {
+            // 共管：任何裝置金鑰都能立即加入另一台裝置（所有裝置金鑰同級）
             (bytes32 qx, bytes32 qy,) = abi.decode(ExecLib.args(e.callData), (bytes32, bytes32, bytes32));
             c.s.kind = uint8(OpKind.KEY_ADD_DAILY);
             c.s.extra = keyIdOf(qx, qy);
-            c.r = master ? Req.MASTER : Req.REJECT; // 標準模式需走排程（24h）
         } else if (fsel == this.addMasterKey.selector) {
-            (bytes32 qx, bytes32 qy,,,) =
-                abi.decode(ExecLib.args(e.callData), (bytes32, bytes32, bytes32, bytes32, bytes));
+            // 綁定／補發實體卡：真正的門檻是發卡方簽章（已 KYC、已付款），在執行期驗證
+            (bytes32 qx, bytes32 qy,,,,) =
+                abi.decode(ExecLib.args(e.callData), (bytes32, bytes32, bytes32, bytes32, bytes32, bytes));
             c.s.kind = uint8(OpKind.KEY_ADD_MASTER);
             c.s.extra = keyIdOf(qx, qy);
-            c.r = master ? Req.MASTER : Req.DAILY; // 第一張卡：DAILY＋發卡方簽章
         } else if (fsel == this.removeKey.selector) {
             bytes32 keyId = abi.decode(ExecLib.args(e.callData), (bytes32));
             c.s.kind = uint8(OpKind.KEY_REMOVE);
             c.s.extra = keyId;
-            c.r = master ? Req.MASTER : Req.REJECT;
             c.frozenOk = true;
+            if (_keys[keyId][account].keyClass == KeyClass.MASTER) {
+                // 卡片不可被其他金鑰移除：只有卡片本身（螢幕確認）能解除綁定
+                c.r = Req.MASTER;
+                c.signer = keyId;
+            }
         } else if (fsel == this.setLimits.selector) {
             (address token, uint128 perTx, uint128 daily) =
                 abi.decode(ExecLib.args(e.callData), (address, uint128, uint128));
@@ -460,6 +492,9 @@ contract KeyringValidator is IValidator {
             c.s.extra = keccak256(abi.encode(action, payload));
             bool sensitive = action == uint8(Action.SET_LIMITS) || action == uint8(Action.MODULE);
             c.r = (sensitive && master) ? Req.MASTER : Req.DAILY;
+            if (action == uint8(Action.REMOVE_KEY) && payload.length == 32) {
+                if (_keys[abi.decode(payload, (bytes32))][account].keyClass == KeyClass.MASTER) c.r = Req.REJECT;
+            }
         } else if (fsel == this.executeScheduled.selector) {
             (uint8 action, bytes memory payload) = abi.decode(ExecLib.args(e.callData), (uint8, bytes));
             c.s.kind = uint8(OpKind.EXECUTE_SCHEDULED);
@@ -582,21 +617,32 @@ contract KeyringValidator is IValidator {
         _addKey(msg.sender, qx, qy, rpIdHash, KeyClass.DAILY);
     }
 
-    /// @notice 綁定 CAFECA 卡。發卡方在鏈下驗證卡片 attestation 後簽署
-    ///         keccak256(chainId, account, qx, qy, rpIdHash, cardSerialHash)。
+    /// @notice 綁定 CAFECA 實體卡。發卡方在鏈下確認：帳戶已完成 L2 KYC、已付款、卡片晶片的 FIDO attestation 有效，
+    ///         然後簽署 cardAttestationDigest。
+    /// @param replacesKeyId 掛失補發時填入舊卡 keyId：新卡綁定的同時汰換舊卡（唯一能不經舊卡本身移除卡片的途徑，
+    ///        且需要發卡方重新確認本人）。一般購買填 0。
     function addMasterKey(
         bytes32 qx,
         bytes32 qy,
         bytes32 rpIdHash,
         bytes32 cardSerialHash,
+        bytes32 replacesKeyId,
         bytes calldata issuerSig
     ) external {
         _requireInit(msg.sender);
-        address issuer = ECDSA.recover(cardAttestationDigest(msg.sender, qx, qy, rpIdHash, cardSerialHash), issuerSig);
+        if (ICardIssuerRegistry(cardIssuerRegistry).levelOf(msg.sender) < CARD_MIN_LEVEL) revert KycRequired();
+        address issuer = ECDSA.recover(
+            cardAttestationDigest(msg.sender, qx, qy, rpIdHash, cardSerialHash, replacesKeyId), issuerSig
+        );
         if (!ICardIssuerRegistry(cardIssuerRegistry).isCardIssuer(issuer)) revert InvalidCardAttestation();
         _addKey(msg.sender, qx, qy, rpIdHash, KeyClass.MASTER);
+        if (replacesKeyId != bytes32(0)) {
+            if (_keys[replacesKeyId][msg.sender].keyClass != KeyClass.MASTER) revert NotACard();
+            _removeKey(msg.sender, replacesKeyId);
+        }
     }
 
+    /// @dev 驗證階段已保證：移除卡片時簽章者必為該卡片本身
     function removeKey(bytes32 keyId) external {
         _removeKey(msg.sender, keyId);
     }
@@ -611,8 +657,11 @@ contract KeyringValidator is IValidator {
     ///                MODULE: 呼叫帳戶 installModule/uninstallModule 的完整 calldata
     function schedule(uint8 action, bytes calldata payload) external returns (bytes32 h) {
         _requireInit(msg.sender);
+        if (action == uint8(Action.REMOVE_KEY) && _keys[abi.decode(payload, (bytes32))][msg.sender].keyClass == KeyClass.MASTER) {
+            revert CardNotRemovable();
+        }
         h = keccak256(abi.encode(action, payload));
-        uint48 readyAt = uint48(block.timestamp) + _delayOf(msg.sender, action, payload);
+        uint48 readyAt = uint48(block.timestamp) + _delayOf(action);
         scheduledAt[h][msg.sender] = readyAt;
         emit Scheduled(msg.sender, h, action, readyAt);
     }
@@ -644,17 +693,24 @@ contract KeyringValidator is IValidator {
 
     // ───────────────────────── 恢復模組介面 ─────────────────────────
 
+    /// @notice 平台備援恢復生效：清除所有裝置金鑰（可能已被盜），加入新裝置。卡片不受影響（不可被其他金鑰移除）。
     function applyRecovery(address account, bytes32 qx, bytes32 qy, bytes32 rpIdHash, bool wipe) external {
         if (msg.sender != recovery) revert OnlyRecovery();
         if (wipe) {
             bytes32[] storage list = _keyList[account];
+            uint256 kept;
             for (uint256 i = 0; i < list.length; i++) {
-                delete _keys[list[i]][account];
+                bytes32 id = list[i];
+                if (_keys[id][account].keyClass == KeyClass.MASTER) {
+                    list[kept++] = id;
+                } else {
+                    delete _keys[id][account];
+                }
             }
-            delete _keyList[account];
+            while (list.length > kept) list.pop();
             AccountState storage st = accountState[account];
-            st.keyCount = 0;
-            st.masterCount = 0;
+            st.keyCount = uint32(kept);
+            st.masterCount = uint32(kept);
             emit KeysWiped(account);
         }
         _addKey(account, qx, qy, rpIdHash, KeyClass.DAILY);
@@ -685,6 +741,11 @@ contract KeyringValidator is IValidator {
         return _keys[keyId][account];
     }
 
+    /// @notice 帳戶目前所有有效金鑰（裝置與卡片）
+    function keysOf(address account) external view returns (bytes32[] memory) {
+        return _keyList[account];
+    }
+
     function masterCount(address account) external view returns (uint256) {
         return accountState[account].masterCount;
     }
@@ -693,13 +754,18 @@ contract KeyringValidator is IValidator {
         return accountState[account].masterCount > 0;
     }
 
-    function cardAttestationDigest(address account, bytes32 qx, bytes32 qy, bytes32 rpIdHash, bytes32 cardSerialHash)
-        public
-        view
-        returns (bytes32)
-    {
+    function cardAttestationDigest(
+        address account,
+        bytes32 qx,
+        bytes32 qy,
+        bytes32 rpIdHash,
+        bytes32 cardSerialHash,
+        bytes32 replacesKeyId
+    ) public view returns (bytes32) {
         return MessageHashUtils.toEthSignedMessageHash(
-            keccak256(abi.encode("CAFECA_CARD", block.chainid, account, qx, qy, rpIdHash, cardSerialHash))
+            keccak256(
+                abi.encode("CAFECA_CARD", block.chainid, account, qx, qy, rpIdHash, cardSerialHash, replacesKeyId)
+            )
         );
     }
 
@@ -727,6 +793,14 @@ contract KeyringValidator is IValidator {
         AccountState storage st = accountState[account];
         if (st.keyCount <= 1) revert LastKey();
         delete _keys[keyId][account];
+        bytes32[] storage list = _keyList[account];
+        for (uint256 i = 0; i < list.length; i++) {
+            if (list[i] == keyId) {
+                list[i] = list[list.length - 1];
+                list.pop();
+                break;
+            }
+        }
         st.keyCount--;
         if (k.keyClass == KeyClass.MASTER) st.masterCount--;
         emit KeyRemoved(account, keyId);
@@ -737,12 +811,7 @@ contract KeyringValidator is IValidator {
         emit LimitsSet(account, token, perTx, daily);
     }
 
-    function _delayOf(address account, uint8 action, bytes calldata payload) internal view returns (uint48) {
-        if (action == uint8(Action.REMOVE_KEY)) {
-            bytes32 keyId = abi.decode(payload, (bytes32));
-            return _keys[keyId][account].keyClass == KeyClass.MASTER ? DELAY_REMOVE_MASTER : DELAY_DAILY;
-        }
-        if (action == uint8(Action.MODULE)) return DELAY_MODULE;
-        return DELAY_DAILY;
+    function _delayOf(uint8 action) internal pure returns (uint48) {
+        return action == uint8(Action.MODULE) ? DELAY_MODULE : DELAY_DAILY;
     }
 }

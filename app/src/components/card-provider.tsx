@@ -58,6 +58,8 @@ export function summaryLine(s: TxSummary): { title: string; detail: string; warn
       return { title: "⚠ " + label, detail: "安裝或移除帳戶模組", warn: true };
     case 18:
       return { title: label, detail: `新裝置金鑰 ${s.extra.slice(2, 10).toUpperCase()}` };
+    case 19:
+      return { title: label, detail: `備援金鑰 ${short(s.counterparty, 6)}` };
     case 0:
       return { title: "⚠ " + label, detail: `合約 ${short(s.counterparty, 6)}`, warn: true };
     default:

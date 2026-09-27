@@ -195,3 +195,25 @@ export function errMsg(e: unknown): string {
   if (m.includes("NotAllowedError") || m.includes("The operation either timed out or was not allowed")) return "已取消或逾時";
   return m;
 }
+
+/** 隱藏金額時顯示的遮罩 */
+export const HIDDEN_AMOUNT = "••••••";
+
+/** 顯示／隱藏餘額的眼睛按鈕 */
+export function EyeToggle({ shown, onToggle, className }: { shown: boolean; onToggle: () => void; className?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={shown ? "隱藏餘額" : "顯示餘額"}
+      aria-pressed={shown}
+      className={cx("grid size-7 place-items-center rounded-full hover:bg-white/20", className)}
+    >
+      <svg viewBox="0 0 24 24" className="size-[18px]" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
+        <circle cx="12" cy="12" r="3" />
+        {!shown && <path d="M4 4l16 16" />}
+      </svg>
+    </button>
+  );
+}

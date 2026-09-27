@@ -5,7 +5,6 @@ import {Base} from "./Base.t.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {KeyringValidator} from "../src/modules/KeyringValidator.sol";
-import {IdentityAccountFactory} from "../src/factory/IdentityAccountFactory.sol";
 import {IERC7579ModuleConfig, MODULE_TYPE_EXECUTOR} from "../src/interfaces/IERC7579.sol";
 import {OpKind, TxSummary, TxSummaryLib} from "../src/lib/TxSummary.sol";
 
@@ -24,41 +23,40 @@ contract KeyringTest is Base {
     // ── §4.4 開戶：initCode 部署＋第一把 passkey 同一筆完成 ──
 
     function test_CreateAccountViaInitCode() public {
-        bytes32 idc2 = bytes32(uint256(keccak256("apple|sub-999|salt")) >> 8);
-        address predicted = factory.getAddress(idc2);
+        // 身分以 FIDO2 金鑰為根：地址由公鑰決定，瀏覽器可自行算出並以 initCode 部署
+        (bytes32 qx, bytes32 qy) = _pub(NEW_PHONE);
+        address predicted = factory.getAddress(qx, qy);
         vm.deal(predicted, 1 ether);
-
-        IdentityAccountFactory.BindParams memory b = _bindFor(idc2, NEW_PHONE, EPHEMERAL);
 
         PackedUserOperation memory op =
             _op(predicted, address(keyring), _exec(address(dd), 0, abi.encodeCall(dd.registerDevice, (bytes32("iphone"), hex"01"))));
-        op.initCode = abi.encodePacked(address(factory), abi.encodeCall(factory.createAccount, (idc2, b)));
+        op.initCode = abi.encodePacked(address(factory), abi.encodeCall(factory.createAccount, (qx, qy, RP)));
         _signDaily(op, NEW_PHONE);
         _handle(op);
 
         assertGt(predicted.code.length, 0);
         assertEq(uint8(keyring.getKey(predicted, _keyId(NEW_PHONE)).keyClass), uint8(KeyringValidator.KeyClass.DAILY));
-        assertTrue(recovery.isIdentityOf(idc2, predicted));
     }
 
-    function test_InterceptedLoginCannotBindOtherKey() public {
-        bytes32 idc2 = bytes32(uint256(keccak256("google|sub-777|salt")) >> 8);
-        IdentityAccountFactory.BindParams memory b = _bindFor(idc2, PHONE, EPHEMERAL);
-        // 攻擊者攔截 JWT／證明，換上自己的公鑰，但沒有 ephemeral 私鑰
-        (b.qx, b.qy) = _pub(ATTACKER);
-        vm.expectRevert(IdentityAccountFactory.InvalidEphemeralSignature.selector);
-        factory.createAccount(idc2, b);
+    function test_InitCodeSignedByOtherKeyRejected() public {
+        // 用別人的公鑰部署，但沒有那把私鑰：第一筆 UserOp 驗簽失敗，整筆不上鏈
+        (bytes32 qx, bytes32 qy) = _pub(NEW_PHONE);
+        address predicted = factory.getAddress(qx, qy);
+        vm.deal(predicted, 1 ether);
+        PackedUserOperation memory op = _op(predicted, address(keyring), _exec(address(dd), 0, abi.encodeCall(dd.revokeDevice, (bytes32(0)))));
+        op.initCode = abi.encodePacked(address(factory), abi.encodeCall(factory.createAccount, (qx, qy, RP)));
+        _signWith(op, ATTACKER, _dailyAuthData());
+        _handleExpectFail(op);
     }
 
-    function test_InterceptedLoginWithOwnEphemeralRejected() public {
-        bytes32 idc2 = bytes32(uint256(keccak256("google|sub-777|salt")) >> 8);
-        IdentityAccountFactory.BindParams memory good = _bindFor(idc2, PHONE, EPHEMERAL);
-        // 攻擊者用自己的 ephemeral 重簽，但 JWT nonce 綁的是受害者的 ephemeral
-        IdentityAccountFactory.BindParams memory b = _bindFor(idc2, ATTACKER, 0xBAD2);
-        b.proof = good.proof;
-        b.expiry = good.expiry;
-        vm.expectRevert(IdentityAccountFactory.InvalidProof.selector);
-        factory.createAccount(idc2, b);
+    function test_FrontRunDeployStillOwnedByRootKey() public {
+        // 攻擊者搶先代為部署：帳戶仍只由這把金鑰控制，攻擊者得不到任何權限
+        (bytes32 qx, bytes32 qy) = _pub(NEW_PHONE);
+        address a = factory.createAccount(qx, qy, RP);
+        assertEq(a, factory.getAddress(qx, qy));
+        assertEq(uint8(keyring.getKey(a, _keyId(NEW_PHONE)).keyClass), uint8(KeyringValidator.KeyClass.DAILY));
+        assertEq(uint8(keyring.getKey(a, _keyId(ATTACKER)).keyClass), uint8(KeyringValidator.KeyClass.NONE));
+        assertEq(factory.createAccount(qx, qy, RP), a); // 重複呼叫冪等
     }
 
     // ── §4.3 標準模式（尚未綁卡）──
@@ -92,32 +90,34 @@ contract KeyringTest is Base {
         _handle(op5);
     }
 
-    function test_Standard_AddDailyKeyNeedsSchedule() public {
+    // ── 多裝置共管：所有裝置金鑰同級 ──
+
+    function test_Device_AddsAnotherDeviceImmediately() public {
         (bytes32 qx, bytes32 qy) = _pub(NEW_PHONE);
-        // 立即新增被拒
         PackedUserOperation memory op =
             _op(account, address(keyring), _exec(address(keyring), 0, abi.encodeCall(keyring.addDailyKey, (qx, qy, RP))));
         _signDaily(op, PHONE);
-        _handleExpectFail(op);
-
-        // 排程 → 24h 後執行
-        bytes memory payload = abi.encode(qx, qy, RP);
-        uint8 action = uint8(KeyringValidator.Action.ADD_DAILY);
-        op = _op(account, address(keyring), _exec(address(keyring), 0, abi.encodeCall(keyring.schedule, (action, payload))));
-        _signDaily(op, PHONE);
-        _handle(op);
-
-        bytes memory execData = abi.encodeCall(keyring.executeScheduled, (action, payload));
-        op = _op(account, address(keyring), _exec(address(keyring), 0, execData));
-        _signDaily(op, PHONE);
-        _handle(op); // 執行期 NotReady：UserOp 執行失敗，金鑰不會被加入
-        assertEq(uint8(keyring.getKey(account, _keyId(NEW_PHONE)).keyClass), uint8(KeyringValidator.KeyClass.NONE));
-
-        vm.warp(block.timestamp + 24 hours);
-        op = _op(account, address(keyring), _exec(address(keyring), 0, execData));
-        _signDaily(op, PHONE);
         _handle(op);
         assertEq(uint8(keyring.getKey(account, _keyId(NEW_PHONE)).keyClass), uint8(KeyringValidator.KeyClass.DAILY));
+
+        // 新裝置與原裝置等級相同：新裝置也能移除原裝置
+        op = _op(account, address(keyring), _exec(address(keyring), 0, abi.encodeCall(keyring.removeKey, (_keyId(PHONE)))));
+        _signDaily(op, NEW_PHONE);
+        _handle(op);
+        assertEq(uint8(keyring.getKey(account, _keyId(PHONE)).keyClass), uint8(KeyringValidator.KeyClass.NONE));
+        assertEq(keyring.keysOf(account).length, 1);
+
+        PackedUserOperation memory t = _transferOp(1e6);
+        _signDaily(t, NEW_PHONE);
+        _handle(t);
+    }
+
+    function test_Device_CannotRemoveLastKey() public {
+        PackedUserOperation memory op =
+            _op(account, address(keyring), _exec(address(keyring), 0, abi.encodeCall(keyring.removeKey, (_keyId(PHONE)))));
+        _signDaily(op, PHONE);
+        _handle(op); // 執行期 LastKey
+        assertEq(uint8(keyring.getKey(account, _keyId(PHONE)).keyClass), uint8(KeyringValidator.KeyClass.DAILY));
     }
 
     // ── §4.5 綁卡 → 主金鑰模式 ──
@@ -129,14 +129,64 @@ contract KeyringTest is Base {
     }
 
     function test_BindCard_RejectsFakeIssuer() public {
-        (bytes32 qx, bytes32 qy) = _pub(CARD);
-        bytes32 serial = keccak256("fake");
-        bytes memory sig = _ethSign(0xFA4E, keyring.cardAttestationDigest(account, qx, qy, RP, serial));
-        bytes memory data = abi.encodeCall(KeyringValidator.addMasterKey, (qx, qy, RP, serial, sig));
-        PackedUserOperation memory op = _op(account, address(keyring), _exec(address(keyring), 0, data));
-        _signDaily(op, PHONE);
-        _handle(op); // 執行期 revert（InvalidCardAttestation），帳戶狀態不變
+        _kyc(account);
+        _bindCardKey(account, CARD, keccak256("fake"), bytes32(0), 0xFA4E); // 執行期 InvalidCardAttestation
         assertFalse(keyring.isMasterMode(account));
+    }
+
+    function test_BindCard_RequiresKyc() public {
+        _bindCardKey(account, CARD, keccak256("card"), bytes32(0), issuerPk); // 執行期 KycRequired
+        assertFalse(keyring.isMasterMode(account));
+        _kyc(account);
+        _bindCardKey(account, CARD, keccak256("card"), bytes32(0), issuerPk);
+        assertTrue(keyring.isMasterMode(account));
+    }
+
+    // ── 實體卡不可被其他金鑰移除 ──
+
+    function test_Card_PhoneCannotRemoveCard_NorSchedule() public {
+        _bindCard(account);
+        bytes memory cd = _exec(address(keyring), 0, abi.encodeCall(keyring.removeKey, (_keyId(CARD))));
+        PackedUserOperation memory op = _op(account, address(keyring), cd);
+        _signDaily(op, PHONE);
+        _handleExpectFail(op);
+
+        uint8 action = uint8(KeyringValidator.Action.REMOVE_KEY);
+        op = _op(
+            account,
+            address(keyring),
+            _exec(address(keyring), 0, abi.encodeCall(keyring.schedule, (action, abi.encode(_keyId(CARD)))))
+        );
+        _signDaily(op, PHONE);
+        _handleExpectFail(op);
+        assertTrue(keyring.isMasterMode(account));
+    }
+
+    function test_Card_OtherCardCannotRemoveIt_ButItselfCan() public {
+        _bindCard(account);
+        uint256 card2 = 0xCA4D2;
+        _bindCardKey(account, card2, keccak256("card-0002"), bytes32(0), issuerPk);
+        assertEq(keyring.masterCount(account), 2);
+
+        bytes memory cd = _exec(address(keyring), 0, abi.encodeCall(keyring.removeKey, (_keyId(CARD))));
+        PackedUserOperation memory op = _op(account, address(keyring), cd);
+        (,,, bytes32 ctxd) = keyring.previewAssessment(account, cd);
+        _signWith(op, card2, _cardAuthData(ctxd));
+        _handleExpectFail(op);
+
+        op = _op(account, address(keyring), cd);
+        _signCard(op); // 卡片自己
+        _handle(op);
+        assertEq(keyring.masterCount(account), 1);
+    }
+
+    function test_Card_LostCardReplacedByIssuer() public {
+        _bindCard(account);
+        uint256 card2 = 0xCA4D2;
+        _bindCardKey(account, card2, keccak256("card-0002"), _keyId(CARD), issuerPk);
+        assertEq(keyring.masterCount(account), 1);
+        assertEq(uint8(keyring.getKey(account, _keyId(CARD)).keyClass), uint8(KeyringValidator.KeyClass.NONE));
+        assertEq(uint8(keyring.getKey(account, _keyId(card2)).keyClass), uint8(KeyringValidator.KeyClass.MASTER));
     }
 
     // ── §4.3＋§9.2 主金鑰模式：大額需卡片＋螢幕確認 ──
@@ -196,16 +246,11 @@ contract KeyringTest is Base {
         assertEq(twdc.balanceOf(bob), 100e6);
     }
 
-    function test_Master_CardAddsKeyImmediately_PhoneCannot() public {
+    function test_Master_CardAddsKeyImmediately() public {
         _bindCard(account);
         (bytes32 qx, bytes32 qy) = _pub(NEW_PHONE);
         bytes memory cd = _exec(address(keyring), 0, abi.encodeCall(keyring.addDailyKey, (qx, qy, RP)));
-
         PackedUserOperation memory op = _op(account, address(keyring), cd);
-        _signDaily(op, PHONE);
-        _handleExpectFail(op);
-
-        op = _op(account, address(keyring), cd);
         _signCard(op);
         _handle(op);
         assertEq(uint8(keyring.getKey(account, _keyId(NEW_PHONE)).keyClass), uint8(KeyringValidator.KeyClass.DAILY));
@@ -218,24 +263,6 @@ contract KeyringTest is Base {
         _signCard(op);
         _handle(op);
         assertEq(uint8(keyring.getKey(account, _keyId(PHONE)).keyClass), uint8(KeyringValidator.KeyClass.NONE));
-    }
-
-    function test_Master_PhoneRemovingCardNeeds72h() public {
-        _bindCard(account);
-        bytes memory payload = abi.encode(_keyId(CARD));
-        uint8 action = uint8(KeyringValidator.Action.REMOVE_KEY);
-        PackedUserOperation memory op =
-            _op(account, address(keyring), _exec(address(keyring), 0, abi.encodeCall(keyring.schedule, (action, payload))));
-        _signDaily(op, PHONE);
-        _handle(op);
-        bytes32 h = keccak256(abi.encode(action, payload));
-        assertEq(keyring.scheduledAt(h, account), uint48(block.timestamp + 72 hours));
-
-        // 卡片在期間取消
-        op = _op(account, address(keyring), _exec(address(keyring), 0, abi.encodeCall(keyring.cancel, (h))));
-        _signDaily(op, CARD); // 取消屬收緊，任何金鑰皆可，不需 ctxd
-        _handle(op);
-        assertEq(keyring.scheduledAt(h, account), 0);
     }
 
     function test_Master_LimitLowerByPhone_RaiseNeedsCard() public {

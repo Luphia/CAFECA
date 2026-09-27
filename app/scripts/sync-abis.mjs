@@ -5,9 +5,9 @@ const names = {
   EntryPoint: "EntryPoint.sol/EntryPoint", CafecaAccount: "CafecaAccount.sol/CafecaAccount",
   IdentityAccountFactory: "IdentityAccountFactory.sol/IdentityAccountFactory", KeyringValidator: "KeyringValidator.sol/KeyringValidator",
   RecoveryValidator: "RecoveryValidator.sol/RecoveryValidator", ChannelValidator: "ChannelValidator.sol/ChannelValidator",
-  ChannelManager: "ChannelManager.sol/ChannelManager", JwksRegistry: "JwksRegistry.sol/JwksRegistry",
+  ChannelManager: "ChannelManager.sol/ChannelManager",
   AttestationRegistry: "AttestationRegistry.sol/AttestationRegistry", DeviceDirectory: "DeviceDirectory.sol/DeviceDirectory",
-  CafecaPaymaster: "CafecaPaymaster.sol/CafecaPaymaster", AttestedOidcVerifier: "AttestedOidcVerifier.sol/AttestedOidcVerifier",
+  CafecaPaymaster: "CafecaPaymaster.sol/CafecaPaymaster",
   TestStable: "TestStable.sol/TestStable",
 };
 const ts = ["// 由 contracts/out 自動產生，請勿手動編輯", ""];

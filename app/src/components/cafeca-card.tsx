@@ -1,9 +1,10 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { CafecaMark } from "./cafeca-logo";
 import { cx } from "./ui";
 
-/** 卡片正面：依設計概念（紫→橘漸層、指紋感應器、感應標誌、VISA） */
+/** 卡片正面：依設計概念（紫→橘漸層、指紋感應器、感應標誌、Payment Protocol 標示；卡面不使用任何卡組織商標） */
 export function CardFront({ className, holder, compact }: { className?: string; holder?: string; compact?: boolean }) {
   return (
     <div
@@ -18,13 +19,13 @@ export function CardFront({ className, holder, compact }: { className?: string; 
         ))}
       </svg>
       <div className="absolute right-4 top-3.5 flex items-center gap-1.5">
-        <FingerprintMark className="size-6" />
+        <CafecaMark className="size-5" />
         <span className="text-[15px] font-semibold tracking-[0.18em]">CAFECA</span>
       </div>
       <Contactless className="absolute right-5 top-1/2 size-5 -translate-y-1/2 opacity-90" />
       <div className="absolute bottom-4 left-4">
         {!compact && holder && <div className="mb-1 text-[11px] uppercase tracking-widest opacity-90">{holder}</div>}
-        <span className="text-xl font-black italic tracking-tight">VISA</span>
+        <span className="text-[13px] font-semibold uppercase leading-none tracking-[0.14em]">Payment Protocol</span>
       </div>
       <div className="absolute bottom-4 right-5 grid size-10 place-items-center rounded-full border border-[#f7c27a]/70">
         <div className="size-5 rounded-[5px] bg-[#1c1420]/90" />

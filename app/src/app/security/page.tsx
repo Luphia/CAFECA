@@ -1,15 +1,20 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { encodeAbiParameters, encodeFunctionData, keccak256, parseAbiItem, parseUnits, type Hex } from "viem";
-import { Action, DEPLOYMENT, KeyClass, RecoveryPath, TWDC_DECIMALS } from "@/lib/config";
+import { encodeAbiParameters, encodeFunctionData, hexToBytes, keccak256, parseUnits, type Hex } from "viem";
+import { Action, DEPLOYMENT, KeyClass, TWDC_DECIMALS } from "@/lib/config";
 import { keyringValidatorAbi, recoveryValidatorAbi } from "@/lib/contracts/abis";
-import { api, clearWallet, publicClient, saveWallet } from "@/lib/client";
+import { publicClient, saveWallet } from "@/lib/client";
 import { loadSchedules, removeSchedule, runOp, saveSchedule, scheduledReadyAt, type LocalSchedule } from "@/lib/actions";
 import { getCard } from "@/lib/card-sim";
 import { execCall } from "@/lib/userop";
 import { registerPasskey } from "@/lib/webauthn";
+import { parseDeeplink, type PairLink } from "@/lib/deeplink";
+import { PairApprove } from "@/components/pair-approve";
+import { QrScanner } from "@/components/qr-scanner";
+import { PasskeyIcon, ScanIcon } from "@/components/icons";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
 import { useWallet } from "@/components/wallet-provider";
@@ -26,7 +31,7 @@ export default function SecurityPage() {
 }
 
 function SecurityBody() {
-  const { wallet, chain, refresh, refreshSession } = useWallet();
+  const { wallet, chain, refresh, logout: signOut } = useWallet();
   const confirmOnCard = useCardConfirm();
   const toast = useToast();
   const router = useRouter();
@@ -35,7 +40,10 @@ function SecurityBody() {
   const [schedules, setSchedules] = useState<(LocalSchedule & { live: number })[]>([]);
   const [limits, setLimits] = useState({ perTx: "", daily: "" });
   const [current, setCurrent] = useState<{ perTx: bigint; daily: bigint } | null>(null);
-  const [recovery, setRecovery] = useState<{ path: number; readyAt: number } | null>(null);
+  const [recovery, setRecovery] = useState<{ readyAt: number; escalated: boolean } | null>(null);
+  const [pairText, setPairText] = useState("");
+  const [pairLink, setPairLink] = useState<PairLink | null>(null);
+  const [scanning, setScanning] = useState(false);
   const [label, setLabel] = useState("我的筆電");
   const [busy, setBusy] = useState<string | null>(null);
   const [now, setNow] = useState(0);
@@ -43,11 +51,7 @@ function SecurityBody() {
   const load = useCallback(async () => {
     setNow(Math.floor(Date.now() / 1000));
     const card = await getCard();
-    const ev = parseAbiItem("event KeyAdded(address indexed account, bytes32 indexed keyId, uint8 keyClass)");
-    const logs = await publicClient
-      .getLogs({ address: DEPLOYMENT.keyring, event: ev, args: { account: w.address }, fromBlock: BigInt(DEPLOYMENT.startBlock) })
-      .catch(() => []);
-    const ids = [...new Set([...logs.map((l) => l.args.keyId!), ...w.passkeys.map((p) => p.keyId), ...(card ? [card.info.keyId] : [])])];
+    const ids = await publicClient.readContract({ address: DEPLOYMENT.keyring, abi: keyringValidatorAbi, functionName: "keysOf", args: [w.address] });
     const rows: KeyRow[] = [];
     for (const id of ids) {
       const k = await publicClient.readContract({ address: DEPLOYMENT.keyring, abi: keyringValidatorAbi, functionName: "getKey", args: [w.address, id] });
@@ -57,7 +61,7 @@ function SecurityBody() {
         keyId: id,
         keyClass: k.keyClass,
         addedAt: Number(k.addedAt),
-        label: local ? `${local.label}（此瀏覽器）` : card?.info.keyId === id ? "CAFECA 卡（此瀏覽器的模擬器）" : k.keyClass === KeyClass.MASTER ? "CAFECA 卡" : "Passkey",
+        label: local ? `${local.label}（此裝置）` : card?.info.keyId === id ? "CAFECA 實體卡（此瀏覽器的模擬器）" : k.keyClass === KeyClass.MASTER ? "CAFECA 實體卡" : "其他裝置",
       });
     }
     setKeys(rows);
@@ -69,8 +73,8 @@ function SecurityBody() {
     const live = await Promise.all(local.map(async (s) => ({ ...s, live: await scheduledReadyAt(w.address, s.hash) })));
     setSchedules(live.filter((s) => s.live > 0));
 
-    const [path, readyAt] = await publicClient.readContract({ address: DEPLOYMENT.recovery, abi: recoveryValidatorAbi, functionName: "pending", args: [w.address] });
-    setRecovery(path !== RecoveryPath.NONE ? { path, readyAt: Number(readyAt) } : null);
+    const [active, escalated, readyAt] = await publicClient.readContract({ address: DEPLOYMENT.recovery, abi: recoveryValidatorAbi, functionName: "pending", args: [w.address] });
+    setRecovery(active ? { readyAt: Number(readyAt), escalated } : null);
   }, [w]);
 
   useEffect(() => {
@@ -99,34 +103,36 @@ function SecurityBody() {
     toast(<span>已排程，時間鎖到期後可執行 <TxLink hash={res.txHash} /></span>, "ok");
   };
 
+  /** 在這台瀏覽器再建立一把 passkey（例如另一個瀏覽器設定檔、或不同步的安全金鑰） */
   const addPasskey = () =>
     wrap("add", async () => {
-      const pk = await registerPasskey(`cafeca-${Date.now().toString(36)}`, label || "新裝置");
-      if (chain.masterMode) {
-        const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "addDailyKey", args: [pk.qx, pk.qy, pk.rpIdHash] }));
-        const res = await runOp(w, call, confirmOnCard);
-        toast(<span>已新增 Passkey <TxLink hash={res.txHash} /></span>, "ok");
-      } else {
-        const payload = encodeAbiParameters([{ type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }], [pk.qx, pk.qy, pk.rpIdHash]);
-        await schedule(Action.ADD_DAILY, payload, `新增 Passkey「${pk.label}」`);
-      }
+      // userHandle 存身分地址：這把金鑰在任何裝置上都能直接登入此身分
+      const pk = await registerPasskey(`CAFECA ${short(w.address)}`, label || "新裝置", hexToBytes(w.address));
+      const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "addDailyKey", args: [pk.qx, pk.qy, pk.rpIdHash] }));
+      const res = await runOp(w, call, confirmOnCard);
       saveWallet({ ...w, passkeys: [...w.passkeys, pk] });
+      toast(<span>已新增 Passkey <TxLink hash={res.txHash} /></span>, "ok");
     });
+
+  /** 共管：掃描新裝置的配對 QR（或貼上配對連結）→ 比對確認碼 → 加入（所有裝置金鑰同級） */
+  const openPairLink = (text: string) => {
+    try {
+      const l = parseDeeplink(text, window.location.origin);
+      if (l.action !== "pair") throw new Error("這不是裝置配對的 QR code");
+      setScanning(false);
+      setPairLink(l);
+    } catch (e) {
+      setScanning(false);
+      toast(errMsg(e), "danger");
+    }
+  };
+  const onScan = useCallback((text: string) => openPairLink(text), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const removeKey = (k: KeyRow) =>
     wrap("rm" + k.keyId, async () => {
-      if (chain.masterMode) {
-        const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "removeKey", args: [k.keyId] }));
-        const res = await runOp(w, call, confirmOnCard);
-        toast(<span>已移除 <TxLink hash={res.txHash} /></span>, "ok");
-      } else {
-        await schedule(Action.REMOVE_KEY, encodeAbiParameters([{ type: "bytes32" }], [k.keyId]), `移除 ${k.label}`);
-      }
-    });
-
-  const scheduleRemoveCardByPhone = (k: KeyRow) =>
-    wrap("sch" + k.keyId, async () => {
-      await schedule(Action.REMOVE_KEY, encodeAbiParameters([{ type: "bytes32" }], [k.keyId]), `移除 ${k.label}（72 小時）`);
+      const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "removeKey", args: [k.keyId] }));
+      const res = await runOp(w, call, confirmOnCard);
+      toast(<span>已移除 {k.label} <TxLink hash={res.txHash} /></span>, "ok");
     });
 
   const saveLimits = () =>
@@ -169,20 +175,17 @@ function SecurityBody() {
     });
 
   const logout = async () => {
-    await api("/api/auth/logout", {});
-    await refreshSession();
-    clearWallet();
-    router.replace("/");
+    await signOut();
+    router.replace("/start");
   };
 
   return (
     <>
       <Panel title="身分">
         <dl className="space-y-1.5 text-sm">
-          <Row k="登入方式" v={w.provider === "google" ? "Google" : w.provider === "apple" ? "Apple" : "測試網開發者登入"} />
-          {w.email && <Row k="Email" v={w.email} />}
+          <Row k="身分根" v="FIDO2 裝置金鑰（無第三方登入）" />
+          <Row k="平台備援" v={chain.guardian ? <Badge tone="brand">已啟用</Badge> : <Badge>未啟用</Badge>} />
           <Row k="錢包地址" v={<span className="font-mono text-xs">{short(w.address, 8)}</span>} />
-          <Row k="身分承諾" v={<span className="font-mono text-xs">{short(w.idCommitment, 8)}</span>} />
           <Row k="身分等級" v={chain.level >= 2 ? <Badge tone="ok">L2 實名</Badge> : <Badge>L0</Badge>} />
           <Row k="帳戶模式" v={chain.masterMode ? <Badge tone="brand">主金鑰模式</Badge> : <Badge>標準模式</Badge>} />
         </dl>
@@ -191,46 +194,110 @@ function SecurityBody() {
       {recovery && (
         <Panel title="進行中的恢復" action={<Badge tone="danger">轉出凍結中</Badge>}>
           <p className="mb-3 text-sm text-ink-2">
-            {recovery.path === RecoveryPath.R3_OIDC_ONLY ? "僅 OIDC 恢復（7 天）" : "重新 KYC 恢復（48 小時）"}，預計
-            {new Date(recovery.readyAt * 1000).toLocaleString("zh-TW")} 生效。若非本人操作，請立即取消。
+            平台備援金鑰發起了恢復{recovery.escalated ? "（爭議升級，已經過平台人工複核）" : ""}，預計
+            {new Date(recovery.readyAt * 1000).toLocaleString("zh-TW")} 生效，屆時所有裝置金鑰會被新裝置取代。若非本人操作，請立即取消。
           </p>
-          <Button variant="danger" className="w-full" onClick={cancelRecovery} busy={busy === "cr"}>取消恢復請求</Button>
+          <Button variant="danger" className="w-full" onClick={cancelRecovery} busy={busy === "cr"} disabled={recovery.escalated && !chain.masterMode}>
+            {recovery.escalated ? "以實體卡取消恢復" : "取消恢復請求"}
+          </Button>
+          {recovery.escalated && <p className="mt-2 text-xs text-ink-3">升級恢復只有實體卡能取消。沒有卡片時請聯絡 CAFECA 客服，平台會以根金鑰輪替備援金鑰。</p>}
         </Panel>
       )}
 
       <Panel title="金鑰">
+        <div className="mb-1 text-xs font-medium text-ink-3">裝置金鑰（每台裝置同級，可互相新增與移除）</div>
         <ul className="divide-y divide-line">
-          {keys.map((k) => (
+          {keys.filter((k) => k.keyClass === KeyClass.DAILY).map((k) => (
             <li key={k.keyId} className="flex items-center justify-between py-2.5">
               <div>
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  {k.label}
-                  {k.keyClass === KeyClass.MASTER ? <Badge tone="brand">MASTER</Badge> : <Badge>DAILY</Badge>}
-                </div>
+                <div className="flex items-center gap-2 text-sm font-medium">{k.label}<Badge>裝置</Badge></div>
                 <div className="font-mono text-xs text-ink-3">{k.keyId.slice(0, 18)}… · {new Date(k.addedAt * 1000).toLocaleDateString("zh-TW")}</div>
               </div>
               {keys.length > 1 && (
-                <div className="flex gap-1">
-                  {chain.masterMode && k.keyClass === KeyClass.MASTER && (
-                    <Button size="sm" variant="ghost" onClick={() => scheduleRemoveCardByPhone(k)} busy={busy === "sch" + k.keyId}>
-                      排程移除
-                    </Button>
-                  )}
-                  <Button size="sm" variant="ghost" onClick={() => removeKey(k)} busy={busy === "rm" + k.keyId}>
-                    {chain.masterMode ? "移除" : "排程移除"}
-                  </Button>
-                </div>
+                <Button size="sm" variant="ghost" onClick={() => removeKey(k)} busy={busy === "rm" + k.keyId}>移除</Button>
               )}
             </li>
           ))}
         </ul>
-        <div className="mt-3 flex gap-2">
-          <input className={inputCls} value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Passkey 名稱" />
-          <Button variant="secondary" onClick={addPasskey} busy={busy === "add"}>新增 Passkey</Button>
+
+        <div className="mb-1 mt-4 text-xs font-medium text-ink-3">高等級金鑰（裝置金鑰無法移除）</div>
+        <ul className="divide-y divide-line">
+          {keys.filter((k) => k.keyClass === KeyClass.MASTER).map((k) => (
+            <li key={k.keyId} className="py-2.5">
+              <div className="flex items-center gap-2 text-sm font-medium">{k.label}<Badge tone="brand">實體卡</Badge></div>
+              <div className="font-mono text-xs text-ink-3">{k.keyId.slice(0, 18)}… · 只有卡片本身或掛失補發能移除</div>
+            </li>
+          ))}
+          <li className="py-2.5">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              平台備援金鑰{chain.guardian ? <Badge tone="brand">HSM 託管</Badge> : <Badge>未啟用</Badge>}
+            </div>
+            <div className="text-xs text-ink-3">
+              {chain.guardian ? (
+                <>
+                  <span className="font-mono">{short(chain.guardian, 6)}</span> · 只能協助恢復，不能轉帳；任何裝置都能取消它發起的恢復
+                </>
+              ) : (
+                <>完成實名驗證（證件＋臉部影像）後啟用。<Link href="/kyc" className="text-brand">前往驗證</Link></>
+              )}
+            </div>
+          </li>
+          {!keys.some((k) => k.keyClass === KeyClass.MASTER) && (
+            <li className="py-2.5 text-xs text-ink-3">
+              尚未持有實體卡。<Link href="/card" className="text-brand">了解 CAFECA 卡</Link>
+            </li>
+          )}
+        </ul>
+      </Panel>
+
+      <Panel title="新增裝置">
+        <div className="space-y-4">
+          <div>
+            <div className="text-sm font-medium">連結另一台裝置</div>
+            <p className="mt-0.5 text-xs text-ink-2">
+              在新裝置打開 CAFECA，選「連結既有身份」並建立 passkey，畫面會出現配對 QR code。用這台裝置掃描，確認兩邊的確認碼相同後加入。
+            </p>
+            {pairLink ? (
+              <div className="mt-3">
+                <PairApprove
+                  link={pairLink}
+                  onDone={() => {
+                    setPairLink(null);
+                    setPairText("");
+                    load();
+                  }}
+                  onCancel={() => setPairLink(null)}
+                />
+              </div>
+            ) : scanning ? (
+              <div className="mt-3">
+                <QrScanner onResult={onScan} onClose={() => setScanning(false)} />
+              </div>
+            ) : (
+              <>
+                <Button className="mt-2 w-full" onClick={() => setScanning(true)}>
+                  <ScanIcon className="size-5" /> 掃描 QR code
+                </Button>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    className={inputCls + " font-mono text-xs"}
+                    value={pairText}
+                    onChange={(e) => setPairText(e.target.value)}
+                    placeholder="或貼上配對連結 https://…/dl/pair?…"
+                  />
+                  <Button variant="secondary" onClick={() => openPairLink(pairText)} disabled={!pairText.trim()}>開啟</Button>
+                </div>
+              </>
+            )}
+          </div>
+          <div>
+            <div className="text-sm font-medium">在此瀏覽器新增 Passkey</div>
+            <div className="mt-2 flex gap-2">
+              <input className={inputCls} value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Passkey 名稱" />
+              <Button variant="secondary" onClick={addPasskey} busy={busy === "add"}><PasskeyIcon className="size-4" />新增 Passkey</Button>
+            </div>
+          </div>
         </div>
-        <p className="mt-2 text-xs text-ink-3">
-          {chain.masterMode ? "主金鑰模式：用卡片確認後立即生效。" : "標準模式：新增金鑰需等待 24 小時時間鎖，期間任何金鑰都能取消。"}
-        </p>
       </Panel>
 
       <Panel title="TWDC 額度">
@@ -274,7 +341,7 @@ function SecurityBody() {
       )}
 
       <Notice>
-        遺失手機時：主金鑰模式可用「卡片＋Google 登入」立即恢復；沒有卡片則需等待 7 天（期間轉出凍結，原裝置可取消）。
+        遺失裝置時：還有其他裝置就直接移除遺失的那台；有實體卡可立即把新裝置加回；全部遺失時，用平台備援金鑰重新驗證本人（證件＋臉部影像），等待 48 小時（已綁卡 7 天）後生效。Passkey 若有雲端同步，換機後直接登入即可。
       </Notice>
 
       <Button variant="secondary" className="w-full" onClick={logout}>登出此裝置</Button>

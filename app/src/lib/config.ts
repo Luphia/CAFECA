@@ -11,11 +11,9 @@ export type Deployment = {
   recovery: Address;
   channelValidator: Address;
   channelManager: Address;
-  jwks: Address;
   attestation: Address;
   deviceDirectory: Address;
   paymaster: Address;
-  oidcVerifier: Address;
   twdc: Address;
   startBlock: number;
 };
@@ -37,24 +35,21 @@ export const EXPLORER = "http://211.22.118.149:8080";
 
 export const TWDC_DECIMALS = 6;
 
-export const PUBLIC = {
-  googleClientId: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "",
-  appleClientId: process.env.NEXT_PUBLIC_APPLE_CLIENT_ID ?? "",
-  devLogin: process.env.NEXT_PUBLIC_DEV_LOGIN === "1",
-};
 
-/** 金鑰類別、權限需求（對應 KeyringValidator 的 enum） */
+/** 實體卡售價（測試網以 TWDC 支付給發卡方） */
+export const CARD_PRICE_TWDC = "1200";
+
+/** 金鑰類別、權限需求（對應 KeyringValidator 的 enum）：DAILY＝裝置金鑰（所有裝置同級），MASTER＝實體卡 */
 export const KeyClass = { NONE: 0, DAILY: 1, MASTER: 2 } as const;
 export const Req = { REJECT: 0, DAILY: 1, MASTER: 2 } as const;
 export const Action = { ADD_DAILY: 0, REMOVE_KEY: 1, SET_LIMITS: 2, MODULE: 3 } as const;
 export const ChannelType = { AGENT: 0, CARD: 1, MERCHANT: 2 } as const;
-export const RecoveryPath = { NONE: 0, R1_CARD: 1, R2_REKYC: 2, R3_OIDC_ONLY: 3 } as const;
 
 export const OP_KIND_LABEL: Record<number, string> = {
   0: "未知合約操作",
   1: "轉帳",
   2: "授權",
-  3: "新增日常金鑰",
+  3: "新增裝置金鑰",
   4: "綁定卡片",
   5: "移除金鑰",
   6: "排程變更",
@@ -70,4 +65,5 @@ export const OP_KIND_LABEL: Record<number, string> = {
   16: "聊天裝置",
   17: "取消恢復",
   18: "恢復：新增裝置",
+  19: "啟用平台備援金鑰",
 };

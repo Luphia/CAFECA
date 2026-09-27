@@ -5,7 +5,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
 import { DEPLOYMENT } from "@/lib/config";
 import { useWallet } from "./wallet-provider";
-import { FingerprintMark } from "./cafeca-card";
+import { CafecaTile } from "./cafeca-logo";
+import { PasskeyIcon } from "./icons";
 import { Badge, Button, cx, Notice, Spinner, errMsg, useToast } from "./ui";
 
 const TABS = [
@@ -17,13 +18,13 @@ const TABS = [
 ];
 
 export function AppShell({ children, title, requireSession = true }: { children: ReactNode; title: string; requireSession?: boolean }) {
-  const { wallet, hydrated, session, chain, unlock } = useWallet();
+  const { wallet, hydrated, session, chain, unlock, logout } = useWallet();
   const router = useRouter();
   const path = usePathname();
   const toast = useToast();
 
   useEffect(() => {
-    if (hydrated && !wallet) router.replace("/");
+    if (hydrated && !wallet) router.replace("/start");
   }, [hydrated, wallet, router]);
 
   if (!hydrated || !wallet) {
@@ -36,13 +37,17 @@ export function AppShell({ children, title, requireSession = true }: { children:
 
   const needUnlock = requireSession && !session;
 
+  const signOut = async () => {
+    if (!window.confirm("確定要登出此裝置嗎？金鑰仍保留在裝置上，之後可以直接用 Passkey 登入。")) return;
+    await logout();
+    router.replace("/start");
+  };
+
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col">
       <header className="sticky top-0 z-40 flex items-center justify-between border-b border-line bg-bg/85 px-4 py-3 backdrop-blur">
         <div className="flex items-center gap-2">
-          <div className="brand-gradient grid size-8 place-items-center rounded-lg text-white">
-            <FingerprintMark className="size-5" />
-          </div>
+          <CafecaTile className="size-8" />
           <div>
             <div className="text-[15px] font-semibold leading-tight">{title}</div>
             <div className="text-[11px] text-ink-3">Boltchain 測試網</div>
@@ -51,6 +56,16 @@ export function AppShell({ children, title, requireSession = true }: { children:
         <div className="flex items-center gap-1.5">
           {chain.masterMode ? <Badge tone="brand">主金鑰模式</Badge> : <Badge>標準模式</Badge>}
           {chain.level >= 2 ? <Badge tone="ok">L2</Badge> : <Badge>L0</Badge>}
+          <button
+            onClick={signOut}
+            aria-label="登出"
+            title="登出此裝置"
+            className="ml-1 grid size-8 place-items-center rounded-lg text-ink-2 hover:bg-surface-2 hover:text-danger"
+          >
+            <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M15 4h3a2 2 0 012 2v12a2 2 0 01-2 2h-3M10 17l5-5-5-5M15 12H4" />
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -63,9 +78,7 @@ export function AppShell({ children, title, requireSession = true }: { children:
         )}
         {needUnlock ? (
           <div className="rise mt-10 flex flex-col items-center gap-4 text-center">
-            <div className="brand-gradient grid size-16 place-items-center rounded-2xl text-white">
-              <FingerprintMark className="size-9" />
-            </div>
+            <CafecaTile className="size-16" />
             <div>
               <div className="text-lg font-semibold">解鎖錢包</div>
               <p className="mt-1 text-sm text-ink-2">用此裝置的 Passkey 簽署登入挑戰（ERC-1271）</p>
@@ -79,8 +92,11 @@ export function AppShell({ children, title, requireSession = true }: { children:
                 }
               }}
             >
-              以 Passkey 解鎖
+              <PasskeyIcon className="size-5" /> 以 Passkey 解鎖
             </Button>
+            <button className="text-sm text-ink-3 hover:text-brand" onClick={signOut}>
+              不是你？登出並切換身分
+            </button>
           </div>
         ) : (
           children

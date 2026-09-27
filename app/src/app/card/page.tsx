@@ -1,10 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { encodeFunctionData, parseUnits, type Address, type Hex } from "viem";
 import { ChannelType, DEPLOYMENT, KeyClass, TWDC_DECIMALS } from "@/lib/config";
 import { channelValidatorAbi, keyringValidatorAbi } from "@/lib/contracts/abis";
-import { api, publicClient, saveWallet } from "@/lib/client";
+import { api, publicClient } from "@/lib/client";
 import { createCard, getCard, type CardInfo } from "@/lib/card-sim";
 import { createChannelWithFunding, randomSalt, runOp, transferCall } from "@/lib/actions";
 import { execCall } from "@/lib/userop";
@@ -12,7 +13,7 @@ import { AppShell } from "@/components/app-shell";
 import { CardBack, CardFront } from "@/components/cafeca-card";
 import { useCardConfirm } from "@/components/card-provider";
 import { useWallet } from "@/components/wallet-provider";
-import { Badge, Button, Field, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, useToast } from "@/components/ui";
+import { Badge, Button, EyeToggle, Field, HIDDEN_AMOUNT, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, useToast } from "@/components/ui";
 
 export default function CardPage() {
   return (
@@ -22,43 +23,47 @@ export default function CardPage() {
   );
 }
 
+type Order = { id: string; used: boolean; issuedFor?: string; paidAt: number };
+
 function CardBody() {
   const { wallet, chain, refresh } = useWallet();
   const confirmOnCard = useCardConfirm();
   const toast = useToast();
   const [card, setCard] = useState<CardInfo | null>(null);
   const [bound, setBound] = useState(false);
+  const [boundCards, setBoundCards] = useState<Hex[]>([]);
+  const [shop, setShop] = useState<{ price: string; treasury: Address; orders: Order[] } | null>(null);
+  const [replacing, setReplacing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [kyc, setKyc] = useState({ name: "", idNumber: "", birthday: "" });
   const w = wallet!;
 
   const load = useCallback(async () => {
     const c = await getCard();
     setCard(c?.info ?? null);
-    if (c) {
-      const k = await publicClient.readContract({
-        address: DEPLOYMENT.keyring,
-        abi: keyringValidatorAbi,
-        functionName: "getKey",
-        args: [w.address, c.info.keyId],
-      });
-      setBound(k.keyClass === KeyClass.MASTER);
+    const ids = await publicClient.readContract({ address: DEPLOYMENT.keyring, abi: keyringValidatorAbi, functionName: "keysOf", args: [w.address] });
+    const cards: Hex[] = [];
+    for (const id of ids) {
+      const k = await publicClient.readContract({ address: DEPLOYMENT.keyring, abi: keyringValidatorAbi, functionName: "getKey", args: [w.address, id] });
+      if (k.keyClass === KeyClass.MASTER) cards.push(id);
     }
+    setBoundCards(cards);
+    setBound(!!c && cards.includes(c.info.keyId));
+    setShop(await api<{ price: string; treasury: Address; orders: Order[] }>("/api/card/order").catch(() => null));
   }, [w.address]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
-  }, [load, chain.masterMode]);
+  }, [load, chain.masterMode, chain.level]);
 
-  const holderName = w.kycLeaves?.find((l) => l.field === "name")?.value ?? w.email ?? "CAFECA MEMBER";
+  const holderName = w.kycLeaves?.find((l) => l.field === "name")?.value ?? "CAFECA MEMBER";
+  const paidOrder = shop?.orders.find((o) => !o.used);
 
-  const doKyc = async () => {
-    setBusy("kyc");
+  const wrap = async (id: string, fn: () => Promise<void>) => {
+    setBusy(id);
     try {
-      const r = await api<{ leaves: NonNullable<typeof w.kycLeaves>; txHash: Hex }>("/api/kyc", kyc);
-      saveWallet({ ...w, kycLeaves: r.leaves });
-      toast(<span>已完成 L2 實名驗證 <TxLink hash={r.txHash} /></span>, "ok");
+      await fn();
+      await load();
       await refresh();
     } catch (e) {
       toast(errMsg(e), "danger");
@@ -67,34 +72,48 @@ function CardBody() {
     }
   };
 
-  const issueAndBind = async () => {
-    setBusy("card");
-    try {
-      const info = card ?? (await createCard(holderName.toUpperCase()));
+  /** 付款：TWDC 轉給發卡方（在日常額度內，裝置金鑰即可），再把交易交給發卡方核對 */
+  const pay = () =>
+    wrap("pay", async () => {
+      if (!shop) throw new Error("讀取售價失敗");
+      const res = await runOp(w, transferCall(shop.treasury, parseUnits(shop.price, TWDC_DECIMALS)), confirmOnCard);
+      await api("/api/card/order", { txHash: res.txHash });
+      toast(<span>已付款 {shop.price} TWDC，卡片製作中 <TxLink hash={res.txHash} /></span>, "ok");
+    });
+
+  /** 卡片送達：發卡方確認已 KYC＋已付款後簽署卡片證明，再由你送出綁定（補發時同時汰換舊卡） */
+  const issueAndBind = () =>
+    wrap("card", async () => {
+      const replacesKeyId = replacing ? boundCards[0] : undefined;
+      // 補發：此瀏覽器的模擬器換成一張新卡
+      const info = !replacing && card && !boundCards.includes(card.keyId) ? card : await createCard(holderName.toUpperCase());
       setCard(info);
-      const att = await api<{ serialHash: Hex; issuerSig: Hex }>("/api/issuer/card", {
+      const att = await api<{ serialHash: Hex; replacesKeyId: Hex; issuerSig: Hex }>("/api/issuer/card", {
         qx: info.qx,
         qy: info.qy,
         rpIdHash: info.rpIdHash,
+        replacesKeyId,
       });
       const callData = execCall(
         DEPLOYMENT.keyring,
         encodeFunctionData({
           abi: keyringValidatorAbi,
           functionName: "addMasterKey",
-          args: [info.qx, info.qy, info.rpIdHash, att.serialHash, att.issuerSig],
+          args: [info.qx, info.qy, info.rpIdHash, att.serialHash, att.replacesKeyId, att.issuerSig],
         }),
       );
       const res = await runOp(w, callData, confirmOnCard);
-      toast(<span>卡片已綁定，進入主金鑰模式 <TxLink hash={res.txHash} /></span>, "ok");
-      await refresh();
-      await load();
-    } catch (e) {
-      toast(errMsg(e), "danger");
-    } finally {
-      setBusy(null);
-    }
-  };
+      toast(<span>{replacing ? "新卡已綁定，舊卡已註銷" : "卡片已綁定，進入主金鑰模式"} <TxLink hash={res.txHash} /></span>, "ok");
+      setReplacing(false);
+    });
+
+  const status = bound ? (
+    <Badge tone="ok">已綁定 · 實體金鑰</Badge>
+  ) : boundCards.length > 0 ? (
+    <Badge tone="brand">已綁定（卡片不在此裝置）</Badge>
+  ) : (
+    <Badge>未持有</Badge>
+  );
 
   return (
     <>
@@ -107,43 +126,55 @@ function CardBody() {
         測試網以瀏覽器內的「卡片模擬器」代替實體卡：金鑰是不可匯出的 P-256，簽章格式與 CTXD 協定和實體卡相同。
       </Notice>
 
-      {chain.level < 2 && (
-        <Panel title="步驟 1：L2 實名驗證" action={<Badge>模擬 KYC</Badge>}>
-          <p className="mb-3 text-sm text-ink-2">鏈上只寫入欄位的 Merkle root，原文與 salt 只存在你的裝置。</p>
-          <div className="space-y-3">
-            <Field label="姓名（英文，印在卡上）">
-              <input className={inputCls} value={kyc.name} onChange={(e) => setKyc({ ...kyc, name: e.target.value })} placeholder="CHEN HUNG-JEN" />
-            </Field>
-            <Field label="身分證字號">
-              <input className={inputCls} value={kyc.idNumber} onChange={(e) => setKyc({ ...kyc, idNumber: e.target.value.toUpperCase() })} placeholder="A123456789" />
-            </Field>
-            <Field label="生日">
-              <input className={inputCls} type="date" value={kyc.birthday} onChange={(e) => setKyc({ ...kyc, birthday: e.target.value })} />
-            </Field>
-            <Button className="w-full" onClick={doKyc} busy={busy === "kyc"}>送出驗證</Button>
-          </div>
+      {chain.level < 2 ? (
+        <Panel title="購買 CAFECA 實體卡" action={<Badge>需先實名</Badge>}>
+          <p className="mb-3 text-sm text-ink-2">
+            實體卡是一把等級較高、不能被其他金鑰移除的硬體金鑰，只提供給完成實名驗證（證件＋臉部影像）的身分。
+          </p>
+          <Link href="/kyc" className="block"><Button className="w-full">先完成實名驗證</Button></Link>
+        </Panel>
+      ) : (
+        <Panel title="CAFECA 實體卡" action={status}>
+          {bound && !replacing ? (
+            <p className="text-sm text-ink-2">
+              大額轉帳、放寬額度、建立 AI 支出通道，都需要這張卡在螢幕上確認。你的裝置金鑰無法移除這張卡；手機遺失時，用卡片可以立即把新裝置加回身分。
+            </p>
+          ) : boundCards.length > 0 && !replacing ? (
+            <>
+              <p className="mb-3 text-sm text-ink-2">這個身分已綁定實體卡，但卡片（模擬器）不在此瀏覽器。實體卡以 NFC 感應即可使用。</p>
+              <Button variant="secondary" className="w-full" onClick={() => setReplacing(true)}>卡片遺失？掛失補發</Button>
+            </>
+          ) : (
+            <div className="space-y-3">
+              {replacing && (
+                <Notice tone="warn">掛失補發：新卡綁定時，舊卡會同時被註銷。這是唯一不需要舊卡本身就能移除卡片的方式，因此需要重新付款並由發卡方確認本人。</Notice>
+              )}
+              <ul className="space-y-1 text-sm text-ink-2">
+                <li>・電子紙螢幕：簽署前顯示真正要簽的內容（所見即所簽）</li>
+                <li>・指紋感應：私鑰不離開卡片晶片</li>
+                <li>・Visa 感應付款、NFC 登入與恢復身分</li>
+              </ul>
+              <div className="flex items-center justify-between rounded-xl bg-surface-2 p-3">
+                <span className="text-sm">售價</span>
+                <span className="font-semibold">{shop ? fmtTwdc(parseUnits(shop.price, TWDC_DECIMALS), 0) : "—"} TWDC</span>
+              </div>
+              {!paidOrder ? (
+                <Button className="w-full" onClick={pay} busy={busy === "pay"} disabled={!shop}>
+                  付款購買
+                </Button>
+              ) : (
+                <>
+                  <Notice tone="ok">已付款，卡片已寄達（模擬）。請把卡片靠近手機完成綁定。</Notice>
+                  <Button className="w-full" onClick={issueAndBind} busy={busy === "card"}>
+                    {replacing ? "綁定新卡並註銷舊卡" : "綁定這張卡"}
+                  </Button>
+                </>
+              )}
+              {replacing && <Button variant="ghost" className="w-full" onClick={() => setReplacing(false)}>取消</Button>}
+            </div>
+          )}
         </Panel>
       )}
-
-      <Panel
-        title={chain.level < 2 ? "步驟 2：申請並綁定卡片" : "卡片狀態"}
-        action={bound ? <Badge tone="ok">已綁定 · MASTER</Badge> : chain.masterMode ? <Badge tone="brand">已綁定其他卡</Badge> : <Badge>未綁定</Badge>}
-      >
-        {bound ? (
-          <p className="text-sm text-ink-2">
-            大額轉帳、新增裝置、建立或放寬支出通道，都需要這張卡在螢幕上確認。手機遺失時，卡片＋Google 登入可以立即恢復。
-          </p>
-        ) : chain.masterMode && !card ? (
-          <Notice>這個錢包已綁定卡片，但卡片（模擬器）在另一個瀏覽器。</Notice>
-        ) : (
-          <>
-            <p className="mb-3 text-sm text-ink-2">發卡方確認你的 L2 狀態後簽署卡片證明，再由你用手機 Passkey 送出綁定交易（第一張卡可以用手機綁定）。</p>
-            <Button className="w-full" onClick={issueAndBind} busy={busy === "card"} disabled={chain.level < 2}>
-              {card ? "綁定這張卡" : "申請 CAFECA 卡"}
-            </Button>
-          </>
-        )}
-      </Panel>
 
       {chain.masterMode && <VisaSection />}
     </>
@@ -153,7 +184,7 @@ function CardBody() {
 type Auth = { id: Hex; merchant: string; amount: string; status: string; captured?: string; txs: string[]; ts: number };
 
 function VisaSection() {
-  const { wallet, refresh } = useWallet();
+  const { wallet, refresh, showBalance, setShowBalance } = useWallet();
   const confirmOnCard = useCardConfirm();
   const toast = useToast();
   const w = wallet!;
@@ -268,15 +299,23 @@ function VisaSection() {
 
   return (
     <>
-      <Panel title="Visa 支出通道" action={<Badge tone="ok">已開通</Badge>}>
+      <Panel
+        title="Visa 支出通道"
+        action={
+          <div className="flex items-center gap-1">
+            <EyeToggle shown={showBalance} onToggle={() => setShowBalance(!showBalance)} className="text-ink-2 hover:bg-surface-2" />
+            <Badge tone="ok">已開通</Badge>
+          </div>
+        }
+      >
         <div className="grid grid-cols-2 gap-3 text-center">
           <div className="rounded-xl bg-surface-2 p-3">
             <div className="text-xs text-ink-3">可用</div>
-            <div className="text-lg font-semibold">{bal ? fmtTwdc(bal.available) : "—"}</div>
+            <div className="text-lg font-semibold">{!bal ? "—" : showBalance ? fmtTwdc(bal.available) : HIDDEN_AMOUNT}</div>
           </div>
           <div className="rounded-xl bg-surface-2 p-3">
             <div className="text-xs text-ink-3">授權鎖定中</div>
-            <div className="text-lg font-semibold">{bal ? fmtTwdc(bal.locked) : "—"}</div>
+            <div className="text-lg font-semibold">{!bal ? "—" : showBalance ? fmtTwdc(bal.locked) : HIDDEN_AMOUNT}</div>
           </div>
         </div>
         <div className="mt-3 flex gap-2">

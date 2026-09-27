@@ -20,8 +20,9 @@ contract PaymasterTest is Base {
         pm.deposit{value: 10 ether}();
         pm.addStake{value: 1 ether}(1 days);
 
-        account = factory.getAddress(IDC);
-        factory.createAccount(IDC, _bindParams(account, PHONE));
+        (bytes32 qx, bytes32 qy) = _pub(PHONE);
+        account = factory.getAddress(qx, qy);
+        factory.createAccount(qx, qy, RP);
         twdc.mint(account, 1_000e6);
         // 注意：帳戶沒有任何 ETH／BOLT
     }

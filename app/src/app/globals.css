@@ -82,6 +82,11 @@ body {
   background: linear-gradient(200deg, var(--brand-3) 0%, var(--brand-2) 45%, var(--brand) 100%);
 }
 
+/* 標誌與 app 圖示的漸層（取自品牌原稿：左上橘 → 右下洋紅） */
+.logo-gradient {
+  background: linear-gradient(135deg, #f18344 0%, #e0608a 50%, #d537a6 100%);
+}
+
 .text-gradient {
   background: linear-gradient(90deg, var(--brand) 0%, var(--brand-2) 60%, var(--brand-3) 100%);
   -webkit-background-clip: text;

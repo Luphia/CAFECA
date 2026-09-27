@@ -15,10 +15,8 @@ import {KeyringValidator} from "../src/modules/KeyringValidator.sol";
 import {RecoveryValidator} from "../src/modules/RecoveryValidator.sol";
 import {ChannelValidator} from "../src/modules/ChannelValidator.sol";
 import {ChannelManager} from "../src/channels/ChannelManager.sol";
-import {JwksRegistry} from "../src/registry/JwksRegistry.sol";
 import {AttestationRegistry} from "../src/registry/AttestationRegistry.sol";
 import {DeviceDirectory} from "../src/registry/DeviceDirectory.sol";
-import {MockOidcVerifier} from "../src/mocks/MockOidcVerifier.sol";
 import {IERC7579Execution, Execution} from "../src/interfaces/IERC7579.sol";
 import {ExecLib} from "../src/lib/ExecLib.sol";
 import {WebAuthnLib} from "../src/lib/WebAuthnLib.sol";
@@ -42,18 +40,17 @@ abstract contract Base is Test {
     RecoveryValidator internal recovery;
     ChannelValidator internal cv;
     ChannelManager internal cm;
-    JwksRegistry internal jwks;
     AttestationRegistry internal att;
     DeviceDirectory internal dd;
-    MockOidcVerifier internal verifier;
     IdentityAccountFactory internal factory;
     MockStable internal twdc;
 
-    address internal system = makeAddr("boltchain-system");
     address internal gov = makeAddr("governance");
     address payable internal beneficiary = payable(makeAddr("bundler"));
     uint256 internal issuerPk = 0x1551E7;
     uint256 internal kycPk = 0x4C7C;
+    uint256 internal rootPk = 0x6007; // 平台根金鑰（離線）：授權備援金鑰
+    uint256 internal guardianPk = 0x6A4D; // 此帳戶的平台備援金鑰（HSM）
 
     uint256 internal constant PHONE = 0xA11CE; // 手機 passkey（DAILY）
     uint256 internal constant CARD = 0xCA4D; // CAFECA 卡（MASTER）
@@ -61,8 +58,6 @@ abstract contract Base is Test {
     uint256 internal constant ATTACKER = 0xBAD;
 
     bytes32 internal constant RP = sha256("cafeca.com.tw");
-    bytes32 internal constant IDC = bytes32(uint256(keccak256("google|sub-123|salt")) >> 8);
-    bytes32 internal constant JWK = bytes32(uint256(keccak256("google-kid-1")) >> 8);
 
     uint256 internal constant PER_TX = 10_000e6;
     uint256 internal constant DAILY = 30_000e6;
@@ -73,8 +68,6 @@ abstract contract Base is Test {
         vm.warp(1_790_000_000);
         ep = new EntryPoint();
         impl = new CafecaAccount(address(ep));
-        verifier = new MockOidcVerifier();
-        jwks = new JwksRegistry(system);
         att = new AttestationRegistry(gov);
         dd = new DeviceDirectory();
 
@@ -84,7 +77,7 @@ abstract contract Base is Test {
         address cvAddr = vm.computeCreateAddress(address(this), n + 2);
         address cmAddr = vm.computeCreateAddress(address(this), n + 3);
         keyring = new KeyringValidator(recoveryAddr, cmAddr, cvAddr, address(dd), address(att));
-        recovery = new RecoveryValidator(address(keyring), address(jwks), address(verifier), address(att));
+        recovery = new RecoveryValidator(address(keyring), address(att));
         cv = new ChannelValidator();
         cm = new ChannelManager(address(impl), address(cv));
         assertEq(address(keyring), keyringAddr);
@@ -96,57 +89,57 @@ abstract contract Base is Test {
             address(impl),
             address(keyring),
             address(recovery),
-            address(jwks),
-            address(verifier),
             address(twdc),
             uint128(PER_TX),
             uint128(DAILY)
         );
 
-        vm.prank(system);
-        jwks.addKey(JWK, 1);
         vm.startPrank(gov);
         att.setCardIssuer(vm.addr(issuerPk), true);
         att.setKycSigner(vm.addr(kycPk), true);
+        att.setGuardianAuthority(vm.addr(rootPk), true);
         vm.stopPrank();
     }
 
     // ───────────────────────── 帳戶 ─────────────────────────
 
-    uint256 internal constant EPHEMERAL = 0xE9E3; // 登入前產生的一次性金鑰
-
-    function _bindParams(address, uint256 pk) internal view returns (IdentityAccountFactory.BindParams memory b) {
-        return _bindFor(IDC, pk, EPHEMERAL);
-    }
-
-    /// @dev 開戶順序：ephemeral 金鑰 → OIDC 登入（nonce 綁 ephemeral）→ 建立 passkey → ephemeral 授權綁定
-    function _bindFor(bytes32 idc, uint256 pk, uint256 ephemeralPk)
-        internal
-        view
-        returns (IdentityAccountFactory.BindParams memory b)
-    {
-        (bytes32 qx, bytes32 qy) = _pub(pk);
-        address eph = vm.addr(ephemeralPk);
-        uint64 expiry = uint64(block.timestamp + 1 hours);
-        uint256 nonce = factory.bindNonce(eph, expiry);
-        bytes memory proof = verifier.makeProof([uint256(idc), uint256(JWK), nonce, uint256(expiry)]);
-        bytes memory sig = _ethSign(ephemeralPk, factory.bindAuthorizationDigest(idc, qx, qy, RP));
-        b = IdentityAccountFactory.BindParams(qx, qy, RP, JWK, eph, expiry, proof, sig);
-    }
-
     function _deployAccount() internal returns (address acct) {
-        acct = factory.getAddress(IDC);
-        factory.createAccount(IDC, _bindParams(acct, PHONE));
+        (bytes32 qx, bytes32 qy) = _pub(PHONE);
+        acct = factory.getAddress(qx, qy);
+        factory.createAccount(qx, qy, RP);
         vm.deal(acct, 10 ether);
         twdc.mint(acct, 1_000_000e6);
     }
 
+    /// @dev L2 KYC（證件＋臉部影像）通過：KYC 單位寫入等級證明
+    function _kyc(address acct) internal {
+        bytes32 root = keccak256("claims");
+        uint48 expiry = uint48(block.timestamp + 365 days);
+        att.attest(acct, 2, root, expiry, _ethSign(kycPk, att.attestationDigest(acct, 2, root, expiry)));
+    }
+
+    /// @dev 購買並綁定實體卡（需先 KYC；發卡方確認付款後簽署）
     function _bindCard(address acct) internal {
-        (bytes32 qx, bytes32 qy) = _pub(CARD);
-        bytes32 serial = keccak256("card-0001");
-        bytes memory sig = _ethSign(issuerPk, keyring.cardAttestationDigest(acct, qx, qy, RP, serial));
-        bytes memory data = abi.encodeCall(KeyringValidator.addMasterKey, (qx, qy, RP, serial, sig));
+        if (att.levelOf(acct) < 2) _kyc(acct);
+        _bindCardKey(acct, CARD, keccak256("card-0001"), bytes32(0), issuerPk);
+    }
+
+    function _bindCardKey(address acct, uint256 cardPk, bytes32 serial, bytes32 replaces, uint256 signerPk) internal {
+        (bytes32 qx, bytes32 qy) = _pub(cardPk);
+        bytes memory sig = _ethSign(signerPk, keyring.cardAttestationDigest(acct, qx, qy, RP, serial, replaces));
+        bytes memory data = abi.encodeCall(KeyringValidator.addMasterKey, (qx, qy, RP, serial, replaces, sig));
         PackedUserOperation memory op = _op(acct, address(keyring), _exec(address(keyring), 0, data));
+        _signDaily(op, PHONE);
+        _handle(op);
+    }
+
+    /// @dev KYC 通過後安裝平台備援金鑰（平台根金鑰授權）
+    function _setGuardian(address acct) internal {
+        address g = vm.addr(guardianPk);
+        (, , , uint64 n) = recovery.state(acct);
+        bytes memory sig = _ethSign(rootPk, recovery.guardianDigest(acct, g, n));
+        PackedUserOperation memory op =
+            _op(acct, address(keyring), _exec(address(recovery), 0, abi.encodeCall(recovery.setGuardian, (g, sig))));
         _signDaily(op, PHONE);
         _handle(op);
     }
