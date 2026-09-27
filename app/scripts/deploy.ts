@@ -1,0 +1,213 @@
+/**
+ * 部署 CAFECA 合約到 Boltchain 測試網
+ *
+ *   npm run deploy
+ *
+ * 第一次執行：自動產生部署者私鑰（DEPLOYER_PRIVATE_KEY）並印出地址，請轉 BOLT 進去後再執行一次。
+ * 也會自動產生其餘服務金鑰（paymaster 簽章、OIDC 驗證服務、發卡方、KYC、Visa 處理商、商家）並寫回 .env.local，
+ * 部署結果寫入 deployments/boltchain-testnet.json。
+ */
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import path from "path";
+import {
+  createPublicClient,
+  createWalletClient,
+  formatEther,
+  getAddress,
+  getContractAddress,
+  http,
+  parseEther,
+  parseUnits,
+  toHex,
+  type Abi,
+  type Address,
+  type Hex,
+} from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { exportJWK, generateKeyPair } from "jose";
+import { p256 } from "@noble/curves/p256";
+import { sha256 } from "@noble/hashes/sha256";
+
+const ROOT = process.cwd();
+const ENV_FILE = path.join(ROOT, ".env.local");
+const OUT_FILE = path.join(ROOT, "deployments", "boltchain-testnet.json");
+
+function parseEnv(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m) out[m[1]] = m[2].replace(/^['"]|['"]$/g, "");
+  }
+  return out;
+}
+
+function artifact(name: string): { abi: Abi; bytecode: Hex } {
+  return JSON.parse(readFileSync(path.join(ROOT, "scripts", "artifacts", `${name}.json`), "utf8"));
+}
+
+async function main() {
+  const envText = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, "utf8") : "";
+  const env = parseEnv(envText);
+  // 產生缺少的金鑰（含部署者私鑰）
+  const gen: Record<string, () => Promise<string> | string> = {
+    DEPLOYER_PRIVATE_KEY: generatePrivateKey,
+    RPC_URL: () => "http://211.22.118.149:8545",
+    PAYMASTER_SIGNER_KEY: generatePrivateKey,
+    OIDC_ATTESTOR_KEY: generatePrivateKey,
+    CARD_ISSUER_KEY: generatePrivateKey,
+    KYC_SIGNER_KEY: generatePrivateKey,
+    VISA_OPERATOR_KEY: generatePrivateKey,
+    MERCHANT_KEY: generatePrivateKey,
+    SALT_SECRET: () => toHex(crypto.getRandomValues(new Uint8Array(32))),
+    SESSION_SECRET: () => toHex(crypto.getRandomValues(new Uint8Array(32))),
+    DEV_OIDC_JWK: async () => {
+      const { privateKey } = await generateKeyPair("ES256", { extractable: true });
+      return JSON.stringify(await exportJWK(privateKey));
+    },
+    NEXT_PUBLIC_DEV_LOGIN: () => "1",
+    NEXT_PUBLIC_GOOGLE_CLIENT_ID: () => "",
+    NEXT_PUBLIC_APPLE_CLIENT_ID: () => "",
+  };
+  let appended = "";
+  for (const [k, fn] of Object.entries(gen)) {
+    if (env[k] === undefined) {
+      env[k] = await fn();
+      appended += `${k}=${k === "DEV_OIDC_JWK" ? `'${env[k]}'` : env[k]}\n`;
+    }
+  }
+  if (appended) {
+    writeFileSync(ENV_FILE, envText + (envText.endsWith("\n") || !envText ? "" : "\n") + "\n# 由 npm run deploy 產生\n" + appended);
+    console.log("已產生服務金鑰並寫入 .env.local");
+  }
+
+  const rpc = env.RPC_URL;
+  const deployer = privateKeyToAccount(env.DEPLOYER_PRIVATE_KEY as Hex);
+  const pub = createPublicClient({ transport: http(rpc, { timeout: 60_000 }) });
+  const chainId = await pub.getChainId();
+  const chain = {
+    id: chainId,
+    name: "Boltchain Testnet",
+    nativeCurrency: { name: "BOLT", symbol: "BOLT", decimals: 18 },
+    rpcUrls: { default: { http: [rpc] } },
+  } as const;
+  const wallet = createWalletClient({ account: deployer, chain, transport: http(rpc, { timeout: 120_000 }) });
+
+  const balance = await pub.getBalance({ address: deployer.address });
+  console.log(`chainId ${chainId}，部署者 ${deployer.address}，餘額 ${formatEther(balance)} BOLT`);
+  const deposit = parseEther(env.PAYMASTER_DEPOSIT ?? "5");
+  const stake = parseEther(env.PAYMASTER_STAKE ?? "1");
+  if (balance < deposit + stake + parseEther("1")) {
+    console.error(`\n部署者地址：${deployer.address}`);
+    console.error(`請轉入 BOLT 到這個地址（目前 ${formatEther(balance)} BOLT），再執行一次 npm run deploy。`);
+    console.error("私鑰已存在 .env.local 的 DEPLOYER_PRIVATE_KEY，請妥善保管。\n");
+    console.error(`餘額不足：需要至少 ${formatEther(deposit + stake + parseEther("1"))} BOLT（paymaster 押金＋質押＋部署 gas）`);
+    process.exit(1);
+  }
+
+  // P-256 precompile 檢查（EIP-7951 / RIP-7212，位址 0x100）
+  {
+    const priv = p256.utils.randomPrivateKey();
+    const pt = p256.getPublicKey(priv, false);
+    const h = sha256(new TextEncoder().encode("cafeca"));
+    const sig = p256.sign(h, priv, { lowS: true });
+    const input = toHex(new Uint8Array([...h, ...hexBytes(sig.r), ...hexBytes(sig.s), ...pt.slice(1)]));
+    const r = await pub.call({ to: "0x0000000000000000000000000000000000000100", data: input }).catch(() => ({ data: undefined }));
+    console.log(`P-256 precompile：${r.data && BigInt(r.data) === 1n ? "可用 ✓" : "不可用（合約會改用 Solidity 實作，gas 較高）"}`);
+  }
+
+  const block = await pub.getBlock();
+  const legacy = block.baseFeePerGas === null || block.baseFeePerGas === undefined;
+  const feeOpts = async () => (legacy ? { gasPrice: ((await pub.getGasPrice()) * 12n) / 10n } : {});
+
+  async function deploy(name: string, args: unknown[] = []): Promise<Address> {
+    const a = artifact(name);
+    const hash = await wallet.deployContract({ abi: a.abi, bytecode: a.bytecode, args, ...(await feeOpts()) } as never);
+    const rc = await pub.waitForTransactionReceipt({ hash, timeout: 180_000 });
+    if (rc.status !== "success" || !rc.contractAddress) throw new Error(`${name} 部署失敗 ${hash}`);
+    const addr = getAddress(rc.contractAddress);
+    console.log(`  ${name.padEnd(24)} ${addr}`);
+    return addr;
+  }
+
+  async function send(address: Address, name: string, fn: string, args: unknown[] = [], value = 0n) {
+    const a = artifact(name);
+    const hash = await wallet.writeContract({ address, abi: a.abi, functionName: fn, args, value, ...(await feeOpts()) } as never);
+    const rc = await pub.waitForTransactionReceipt({ hash, timeout: 180_000 });
+    if (rc.status !== "success") throw new Error(`${name}.${fn} 失敗 ${hash}`);
+  }
+
+  const startBlock = Number(await pub.getBlockNumber());
+  console.log("部署合約…");
+  const entryPoint = await deploy("EntryPoint");
+  const accountImpl = await deploy("CafecaAccount", [entryPoint]);
+  const attestor = privateKeyToAccount(env.OIDC_ATTESTOR_KEY as Hex).address;
+  const oidcVerifier = await deploy("AttestedOidcVerifier", [attestor]);
+  const jwks = await deploy("JwksRegistry", [deployer.address]); // 測試網：部署者代替共識層系統地址
+  const attestation = await deploy("AttestationRegistry", [deployer.address]);
+  const deviceDirectory = await deploy("DeviceDirectory");
+
+  const n = await pub.getTransactionCount({ address: deployer.address, blockTag: "pending" });
+  const predict = (k: number) => getContractAddress({ from: deployer.address, nonce: BigInt(n + k) });
+  const [pKeyring, pRecovery, pCv, pCm] = [predict(0), predict(1), predict(2), predict(3)];
+  const keyring = await deploy("KeyringValidator", [pRecovery, pCm, pCv, deviceDirectory, attestation]);
+  const recovery = await deploy("RecoveryValidator", [keyring, jwks, oidcVerifier, attestation]);
+  const channelValidator = await deploy("ChannelValidator");
+  const channelManager = await deploy("ChannelManager", [accountImpl, channelValidator]);
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  if (!same(keyring, pKeyring) || !same(recovery, pRecovery) || !same(channelValidator, pCv) || !same(channelManager, pCm)) {
+    throw new Error("預測地址不符，請重新部署");
+  }
+  const twdc = await deploy("TestStable");
+  const factory = await deploy("IdentityAccountFactory", [
+    accountImpl,
+    keyring,
+    recovery,
+    jwks,
+    oidcVerifier,
+    twdc,
+    parseUnits("10000", 6),
+    parseUnits("30000", 6),
+  ]);
+  const pmSigner = privateKeyToAccount(env.PAYMASTER_SIGNER_KEY as Hex).address;
+  const paymaster = await deploy("CafecaPaymaster", [entryPoint, pmSigner, attestation, channelManager]);
+
+  console.log("設定權限與 paymaster…");
+  await send(attestation, "AttestationRegistry", "setCardIssuer", [privateKeyToAccount(env.CARD_ISSUER_KEY as Hex).address, true]);
+  await send(attestation, "AttestationRegistry", "setKycSigner", [privateKeyToAccount(env.KYC_SIGNER_KEY as Hex).address, true]);
+  await send(paymaster, "CafecaPaymaster", "setTier", [0, parseEther("5"), 30]);
+  await send(paymaster, "CafecaPaymaster", "setTier", [1, parseEther("15"), 100]);
+  await send(paymaster, "CafecaPaymaster", "setTier", [2, parseEther("50"), 300]);
+  await send(paymaster, "CafecaPaymaster", "deposit", [], deposit);
+  await send(paymaster, "CafecaPaymaster", "addStake", [86400], stake);
+
+  const out = {
+    chainId,
+    deployed: true,
+    entryPoint,
+    accountImpl,
+    factory,
+    keyring,
+    recovery,
+    channelValidator,
+    channelManager,
+    jwks,
+    attestation,
+    deviceDirectory,
+    paymaster,
+    oidcVerifier,
+    twdc,
+    startBlock,
+  };
+  writeFileSync(OUT_FILE, JSON.stringify(out, null, 2) + "\n");
+  console.log(`完成 ✓ 已寫入 ${path.relative(ROOT, OUT_FILE)}`);
+  console.log(`剩餘 ${formatEther(await pub.getBalance({ address: deployer.address }))} BOLT`);
+}
+
+function hexBytes(v: bigint): number[] {
+  return Array.from(Buffer.from(v.toString(16).padStart(64, "0"), "hex"));
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

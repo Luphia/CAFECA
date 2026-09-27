@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+/* CAFECA 色彩：取自卡片設計（紫 → 洋紅 → 橘） */
+:root {
+  --bg: #f3f4f9;
+  --surface: #ffffff;
+  --surface-2: #f7f7fb;
+  --line: #e5e6ef;
+  --ink: #1d1b2c;
+  --ink-2: #5d5a72;
+  --ink-3: #8f8ca3;
+  --brand: #8e3fa0;
+  --brand-2: #c0428e;
+  --brand-3: #f0a040;
+  --brand-ink: #ffffff;
+  --ok: #1f9d6b;
+  --warn: #c77a12;
+  --danger: #d2415a;
+  --ok-bg: #e7f6ef;
+  --warn-bg: #fdf3e2;
+  --danger-bg: #fcebee;
+  --brand-bg: #f4eaf7;
+  --epaper: #e9e8e2;
+  --epaper-ink: #232323;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111019;
+    --surface: #1b1a26;
+    --surface-2: #232231;
+    --line: #2f2d40;
+    --ink: #f1eff8;
+    --ink-2: #b6b2c9;
+    --ink-3: #807c96;
+    --brand: #b367c6;
+    --brand-2: #e0629f;
+    --brand-3: #f4b25a;
+    --ok: #3fc48f;
+    --warn: #f0a940;
+    --danger: #f06b82;
+    --ok-bg: #16302a;
+    --warn-bg: #33291a;
+    --danger-bg: #3a1c24;
+    --brand-bg: #2d2038;
+    --epaper: #d9d8d0;
+    --epaper-ink: #1b1b1b;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-brand: var(--brand);
+  --color-brand-2: var(--brand-2);
+  --color-brand-3: var(--brand-3);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-ok-bg: var(--ok-bg);
+  --color-warn-bg: var(--warn-bg);
+  --color-danger-bg: var(--danger-bg);
+  --color-brand-bg: var(--brand-bg);
+  --color-epaper: var(--epaper);
+  --color-epaper-ink: var(--epaper-ink);
+  --font-sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.brand-gradient {
+  background: linear-gradient(200deg, var(--brand-3) 0%, var(--brand-2) 45%, var(--brand) 100%);
+}
+
+.text-gradient {
+  background: linear-gradient(90deg, var(--brand) 0%, var(--brand-2) 60%, var(--brand-3) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(240, 160, 64, 0.55); }
+  70% { box-shadow: 0 0 0 14px rgba(240, 160, 64, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(240, 160, 64, 0); }
+}
+.pulse-ring { animation: pulse-ring 1.6s infinite; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 0.25s ease-out; }

@@ -1,0 +1,18 @@
+# dependencies / build
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# secrets & local data
+.env
+.env*.local
+app/data/
+
+# foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/lib/
+
+.DS_Store
