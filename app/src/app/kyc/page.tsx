@@ -5,14 +5,14 @@ import { useCallback, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { DEPLOYMENT } from "@/lib/config";
 import { recoveryValidatorAbi } from "@/lib/contracts/abis";
-import { api, saveWallet } from "@/lib/client";
+import { api } from "@/lib/client";
 import { runOp } from "@/lib/actions";
 import { execCall } from "@/lib/userop";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
 import { KycCapture, postKyc, type KycEvidence } from "@/components/kyc-capture";
 import { useWallet } from "@/components/wallet-provider";
-import { Badge, Button, Field, inputCls, Notice, Panel, TxLink, errMsg, short, useToast } from "@/components/ui";
+import { Badge, Button, Notice, Panel, TxLink, errMsg, short, useToast } from "@/components/ui";
 
 type Guardian = { address: Address; authoritySig: Hex };
 
@@ -29,7 +29,6 @@ function KycBody() {
   const confirmOnCard = useCardConfirm();
   const toast = useToast();
   const w = wallet!;
-  const [form, setForm] = useState({ name: "", idNumber: "", birthday: "" });
   const [ev, setEv] = useState<KycEvidence | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [done, setDone] = useState<{ kycTx: Hex; guardianTx?: Hex } | null>(null);
@@ -46,8 +45,11 @@ function KycBody() {
     if (!ev) return;
     setBusy("submit");
     try {
-      const r = await postKyc<{ leaves: NonNullable<typeof w.kycLeaves>; txHash: Hex; guardian: Guardian | null }>("/api/kyc", ev, form);
-      saveWallet({ ...w, kycLeaves: r.leaves });
+      const r = await postKyc<{ status: string; txHash?: Hex; guardian: Guardian | null }>("/api/kyc", ev);
+      if (r.status !== "approved" || !r.txHash) {
+        toast(r.status === "review" ? "已送出，需要人工複核，完成後會通知你" : "驗證未通過，請重新拍攝", r.status === "review" ? "neutral" : "danger");
+        return;
+      }
       toast(<span>實名驗證通過（L2） <TxLink hash={r.txHash} /></span>, "ok");
       let guardianTx: Hex | undefined;
       if (r.guardian) {
@@ -115,7 +117,6 @@ function KycBody() {
     );
   }
 
-  const valid = form.name && /^[A-Z][12]\d{8}$/.test(form.idNumber) && form.birthday && ev;
 
   return (
     <>
@@ -127,29 +128,16 @@ function KycBody() {
         </ul>
       </Panel>
 
-      <Panel title="證件資料" action={<Badge tone="warn">測試網模擬 KYC</Badge>}>
-        <div className="space-y-3">
-          <Field label="姓名（英文，與證件相同）">
-            <input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value.toUpperCase() })} placeholder="CHEN HUNG-JEN" />
-          </Field>
-          <Field label="身分證字號">
-            <input className={inputCls} value={form.idNumber} onChange={(e) => setForm({ ...form, idNumber: e.target.value.toUpperCase() })} placeholder="A123456789" />
-          </Field>
-          <Field label="生日">
-            <input className={inputCls} type="date" value={form.birthday} onChange={(e) => setForm({ ...form, birthday: e.target.value })} />
-          </Field>
-        </div>
-      </Panel>
-
-      <Panel title="證件與臉部影像">
+      <Panel title="證件與臉部影像" action={<Badge tone="warn">測試網</Badge>}>
+        <p className="mb-4 text-xs text-ink-3">不需要輸入任何資料：姓名、生日與身分證字號會由系統從證件自動辨識。只能用相機即時拍攝，不能選擇相簿裡的照片。</p>
         <KycCapture onChange={onEvidence} />
       </Panel>
 
       <Notice>
-        影像只用於本人比對。此原型不保存原始影像，只記錄雜湊值；正式版由持照 KYC 單位依個資法規保存與銷毀。
+        證件影像在你的手機上就會加上「僅供 CAFECA 身分驗證使用」浮水印，未加浮水印的原圖不會離開這台裝置。影像只用於本人比對。
       </Notice>
 
-      <Button className="w-full" onClick={submit} busy={busy === "submit"} disabled={!valid}>
+      <Button className="w-full" onClick={submit} busy={busy === "submit"} disabled={!ev}>
         送出實名驗證
       </Button>
     </>

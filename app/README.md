@@ -5,7 +5,7 @@
 ## 啟動
 
 ```bash
-npm install
+npm install          # 會一併下載 MediaPipe 臉部模型到 public/mediapipe（npm run fetch-models 可重跑）
 
 # 1. 第一次執行：自動產生部署者私鑰與所有服務金鑰（寫入 .env.local），並印出部署者地址
 npm run deploy
@@ -16,18 +16,7 @@ npm run deploy
 npm run dev   # http://localhost:10002
 ```
 
-### 部署檔案（避免 git 衝突）
-
-| 檔案 | 進 git | 用途 |
-| --- | --- | --- |
-| `deployments/boltchain-testnet.json` | 是 | 團隊共用的測試網部署；clone 下來即可直接連線 |
-| `deployments/boltchain-testnet.local.json` | 否 | `npm run deploy` 預設寫這裡，只影響你自己的環境 |
-
-App 啟動時優先讀 `.local.json`，沒有才用共用檔（修改後需重新啟動 `npm run dev`）。
-要把你的部署設為團隊共用版本時才執行 `npm run deploy -- --publish`，並 commit `boltchain-testnet.json`。
-刪掉 `.local.json` 即可改回共用部署。只改了工廠合約時可用 `npm run deploy -- --factory`。
-
-RPC 與區塊鏈瀏覽器預設為 `https://boltchain.cafeca.io`；伺服器端可用 `.env.local` 的 `RPC_URL` 覆寫。
+已經部署過、之後合約有變更（例如 v0.3 金鑰模型）時，`npm run deploy` 會補上缺少的服務金鑰（`GUARDIAN_ROOT_KEY`、`GUARDIAN_SEED`）並整套重新部署；舊身分不會搬到新合約，需重新建立。只改了工廠合約時可用 `npm run deploy -- --factory`。
 
 Passkey 需要安全環境：本機請用 `http://localhost:10002`，其他網域須為 https。
 
@@ -76,10 +65,11 @@ Boltchain 測試網：EntryPoint v0.8 ＋ CAFECA 合約（../contracts）
 | --- | --- | --- |
 | 身分建立防濫用 | 每 IP 每日 10 個身分（`MAX_IDENTITIES_PER_IP_PER_DAY`） | 裝置認證（App Attest／Play Integrity）＋Redis |
 | CAFECA 卡 | 瀏覽器卡片模擬器 | 實體卡（安全晶片驅動電子紙） |
-| KYC 證據 | 只檢查證件照與臉部影像的型別、長度、一次性活體挑戰；只保存雜湊 | 持照 KYC 單位：證件真偽、活體偵測、證件照↔臉部比對 |
+| KYC 擷取 | 證件即時拍攝（引導框偵測、自動拍攝、裝置端浮水印）＋6 動作活體（MediaPipe 臉部特徵點）；上傳只有浮水印版 | 同左，並加原生 App 裝置認證 |
+| KYC 後台 | `src/server/kyc-pipeline.ts` 只做結構檢查後放行（`KYC_PROTOTYPE_AUTO_APPROVE=0` 可改為全部轉人工） | 團隊自建：OCR、活體重檢、人臉比對、翻拍偵測（規格 §14.6） |
 | 平台備援金鑰 | 由 `GUARDIAN_SEED`＋帳戶地址衍生 | 每帳戶於 HSM 內產生、不可匯出，簽署需雙人覆核 |
 | 平台根金鑰 | `.env.local` 的 `GUARDIAN_ROOT_KEY` | 離線冷儲存（多簽） |
-| 重新 KYC 恢復 | 比對開戶時身分證字號的 HMAC＋新的臉部影像 | 同上，並與開戶影像比對 |
+| 重新 KYC 恢復 | 新裝置重新即時拍證件＋6 動作活體；同一人比對暫時放行 | 後台人臉比對＋證件統一編號 HMAC 比對 |
 | KYC／Visa | 模擬 | 持照 KYC 單位、發卡處理商 |
 | AI 代理金鑰 | 伺服器 `data/store.json` | TDX enclave |
 | 聊天 | ECDH＋AES-GCM | MLS（RFC 9420） |
@@ -95,3 +85,13 @@ npm run build
 ```
 
 合約 ABI 在 `src/lib/contracts/abis.ts`，部署用 bytecode 在 `scripts/artifacts/`，都由 `../contracts` 編譯產生。
+
+## KYC 測試模式
+
+沒有真人臉部的環境（例如 E2E 測試）可在 `.env.local` 設 `NEXT_PUBLIC_KYC_SIMULATE=1`：活體步驟改為按鈕模擬完成動作，不載入臉部模型。**正式環境不得開啟。**
+證件、臉部影像與動作序列存放在 `data/kyc/<身分地址>/<案件>/`（只有浮水印版），供後台驗證流程處理。
+
+## KYC 測試模式
+
+沒有真人臉部的環境（例如 E2E 測試）可在 `.env.local` 設 `NEXT_PUBLIC_KYC_SIMULATE=1`：活體步驟改為按鈕模擬完成動作，不載入臉部模型。**正式環境不得開啟。**
+證件、臉部影像與動作序列存放在 `data/kyc/<身分地址>/<案件>/`（只有浮水印版），供後台驗證流程處理。

@@ -50,7 +50,7 @@ export type Store = {
   /** 模擬 KYC 單位保存的紀錄：身分證字號只存 HMAC，用於重新 KYC 恢復時比對本人 */
   kyc: Record<string, KycRecord>;
   /** 活體驗證挑戰（一次性） */
-  kycChallenges: Record<string, { code: string; exp: number; used: boolean }>;
+  kycChallenges: Record<string, { code: string; actions: string[]; exp: number; used: boolean }>;
   /** 實體卡訂單：以鏈上付款交易為憑 */
   cardOrders: Record<string, CardOrder>;
   /** 裝置配對 session：新裝置只知道自己的公鑰，既有裝置確認後把身分地址回填 */
@@ -77,8 +77,23 @@ export type KycRecord = {
   level: number;
   ts: number;
   idHash?: string;
-  /** 證件影像與臉部影像的 sha256（原型不保存原始生物特徵；正式版由持照 KYC 單位依法保存） */
-  evidence?: { idImage: string; faceVideo: string; seconds: number; challenge: string }[];
+  /** KYC 案件（證件僅保存浮水印版；原始影像從未離開使用者裝置） */
+  cases?: KycCase[];
+};
+
+export type KycCase = {
+  id: string;
+  purpose: "onboard" | "recover";
+  createdAt: number;
+  challenge: string;
+  files: { front: string; back: string; face: string };
+  hashes: { front: string; back: string; face: string };
+  actions: { action: string; startedAt: number; completedAt: number; peak: number }[];
+  docFeatures: unknown;
+  /** 後台處理結果（團隊自建：OCR、活體重檢、人臉比對、翻拍偵測） */
+  status: "pending" | "approved" | "review" | "rejected";
+  checks: Record<string, { ok: boolean; detail: string }>;
+  fields?: { name?: string; birthday?: string; idNumberHash?: string } | null;
 };
 
 export type CardOrder = { owner: string; txHash: string; amount: string; paidAt: number; used: boolean; replaces?: string; issuedFor?: string };

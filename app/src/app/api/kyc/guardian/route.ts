@@ -7,7 +7,7 @@ import { read } from "@/server/store";
 export const POST = handle(async () => {
   const me = await requireSession();
   const rec = (await read()).kyc[me];
-  if (!rec?.idHash) throw new HttpError(403, "需先完成證件＋臉部影像實名驗證");
+  if (!rec || rec.level < 2) throw new HttpError(403, "需先完成證件＋臉部影像實名驗證");
   if ((await currentGuardian(me)) !== zeroAddress) throw new HttpError(409, "平台備援金鑰已啟用");
   const address = guardianAddress(me);
   return Response.json({ address, authoritySig: await authorizeGuardian(me, address) });

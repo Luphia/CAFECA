@@ -39,3 +39,6 @@ Claude outputs/
 
 # 各自部署的合約位址（npm run deploy 預設寫這裡；共用版本用 --publish 更新 boltchain-testnet.json）
 app/deployments/*.local.json
+
+# MediaPipe wasm 與臉部模型（npm install 時由 scripts/fetch-models.mjs 下載）
+app/public/mediapipe/

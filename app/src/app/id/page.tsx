@@ -220,7 +220,7 @@ function IdFront({ name, handle, level, guardian, card, createdAt, address }: { 
         <div className="rounded-full bg-gradient-to-br from-[#f69a5a] to-[#ef5da8] p-[3px]">
           <div className="grid size-24 place-items-center rounded-full bg-[#2a1c4a] text-4xl font-bold">{initial}</div>
         </div>
-        <div className="mt-4 text-center text-[22px] font-bold tracking-wide">{name ?? "尚未實名"}</div>
+        <div className="mt-4 text-center text-[22px] font-bold tracking-wide">{name ?? (level >= 2 ? "已實名驗證" : "尚未實名")}</div>
         <div className="text-sm text-white/70">{handle ? `@${handle}` : "尚未設定代稱"}</div>
         <span className={cx("mt-3 rounded-full px-3 py-1 text-xs font-semibold", level >= 2 ? "bg-[#4fd8a2]/20 text-[#7ff0c1]" : "bg-white/10 text-white/70")}>
           {level >= 2 ? "L2 實名驗證" : "L0 未實名"}

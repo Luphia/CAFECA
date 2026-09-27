@@ -9,9 +9,12 @@
     "lint": "eslint",
     "deploy": "tsx scripts/deploy.ts",
     "typecheck": "tsc --noEmit",
-    "sync-abis": "node scripts/sync-abis.mjs"
+    "sync-abis": "node scripts/sync-abis.mjs",
+    "fetch-models": "node scripts/fetch-models.mjs",
+    "postinstall": "node scripts/fetch-models.mjs"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "@noble/curves": "^1.9.1",
     "@noble/hashes": "^1.8.0",
     "jose": "^6.2.12",

@@ -12,7 +12,7 @@ import { execCall } from "@/lib/userop";
 import { registerPasskey, type PasskeyInfo } from "@/lib/webauthn";
 import { useCardConfirm } from "@/components/card-provider";
 import { KycCapture, postKyc, type KycEvidence } from "@/components/kyc-capture";
-import { Badge, Button, Field, inputCls, Notice, Panel, TxLink, errMsg, short, useToast } from "@/components/ui";
+import { Badge, Button, Notice, Panel, TxLink, errMsg, short, useToast } from "@/components/ui";
 import { AddressInput } from "@/components/address-input";
 
 type Info = { master: boolean; level: number; guardian: boolean; pending: { readyAt: number } | null; hasCard: boolean };
@@ -36,7 +36,6 @@ function Recover() {
   const [address, setAddress] = useState<Address | null>(null);
   const [info, setInfo] = useState<Info | null>(null);
   const [pk, setPk] = useState<PasskeyInfo | null>(null);
-  const [idNumber, setIdNumber] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [done, setDone] = useState<{ tx: Hex; immediate: boolean; readyAt?: number } | null>(null);
   const [ev, setEv] = useState<KycEvidence | null>(null);
@@ -124,7 +123,6 @@ function Recover() {
         qx: pk.qx,
         qy: pk.qy,
         rpIdHash: pk.rpIdHash,
-        idNumber,
       });
       const rec: PendingLocal = { address, passkey: pk };
       localStorage.setItem(PK, JSON.stringify(rec));
@@ -242,13 +240,10 @@ function Recover() {
               </div>
               {info.guardian && (
                 <div className="mt-3 space-y-3">
-                  <Field label="身分證字號">
-                    <input className={inputCls} value={idNumber} onChange={(e) => setIdNumber(e.target.value.toUpperCase())} placeholder="A123456789" />
-                  </Field>
                   <KycCapture onChange={onEvidence} />
                 </div>
               )}
-              <Button className="mt-3 w-full" variant="secondary" onClick={recoverWithGuardian} busy={busy === "kyc"} disabled={!info.guardian || !idNumber || !ev}>
+              <Button className="mt-3 w-full" variant="secondary" onClick={recoverWithGuardian} busy={busy === "kyc"} disabled={!info.guardian || !ev}>
                 送出重新驗證
               </Button>
             </div>
