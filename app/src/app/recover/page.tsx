@@ -13,6 +13,7 @@ import { registerPasskey, type PasskeyInfo } from "@/lib/webauthn";
 import { useCardConfirm } from "@/components/card-provider";
 import { KycCapture, postKyc, type KycEvidence } from "@/components/kyc-capture";
 import { Badge, Button, Field, inputCls, Notice, Panel, TxLink, errMsg, short, useToast } from "@/components/ui";
+import { AddressInput } from "@/components/address-input";
 
 type Info = { master: boolean; level: number; guardian: boolean; pending: { readyAt: number } | null; hasCard: boolean };
 type PendingLocal = { address: Address; passkey: PasskeyInfo };
@@ -189,7 +190,7 @@ function Recover() {
       {!done && (
         <Panel title="步驟 1：找到你的身分">
           <div className="flex gap-2">
-            <input className={inputCls} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="身分地址 0x… 或 @代稱" />
+            <AddressInput value={query} onChange={setQuery} placeholder="身分地址 0x… 或 @代稱" />
             <Button variant="secondary" onClick={find} busy={busy === "find"} disabled={!query.trim()}>查詢</Button>
           </div>
           {address && info && (

@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { parseDeeplink, type Deeplink, type PairLink } from "@/lib/deeplink";
+import { parseDeeplink, type Deeplink, type PairLink, type TicketLink } from "@/lib/deeplink";
+import { api } from "@/lib/client";
 import { AppShell } from "@/components/app-shell";
 import { PairApprove } from "@/components/pair-approve";
 import { useWallet } from "@/components/wallet-provider";
@@ -29,7 +30,7 @@ export default function DeeplinkPage() {
   }, []);
 
   useEffect(() => {
-    if (!link || link.action === "pair") return;
+    if (!link || link.action === "pair" || link.action === "ticket") return;
     if (link.action === "recover") return router.replace(`/recover?address=${link.address}`);
     if (!hydrated) return;
     if (!wallet) return router.replace("/start");
@@ -49,6 +50,7 @@ export default function DeeplinkPage() {
       </Standalone>
     );
   }
+  if (link?.action === "ticket") return <TicketVerify link={link} />;
   if (!link || !hydrated || link.action !== "pair") {
     return (
       <div className="grid min-h-dvh place-items-center">
@@ -84,5 +86,30 @@ function Standalone({ title, children }: { title: string; children: React.ReactN
       <h1 className="text-2xl font-bold">{title}</h1>
       <Panel>{children}</Panel>
     </div>
+  );
+}
+
+/** 驗票端：掃描持有人出示的票券 QR，向發行方確認簽章與持有人 */
+function TicketVerify({ link }: { link: TicketLink }) {
+  const [r, setR] = useState<{ valid: boolean; ticket?: { title: string; subtitle: string; venue: string; startsAt: number; seat?: string } } | null>(null);
+  useEffect(() => {
+    api<typeof r>(`/api/tickets/verify?t=${link.id}&h=${link.holder}&s=${link.sig}`).then(setR).catch(() => setR({ valid: false }));
+  }, [link]);
+  return (
+    <Standalone title="驗票">
+      {!r ? (
+        <Spinner className="text-brand" />
+      ) : r.valid && r.ticket ? (
+        <div className="space-y-2">
+          <Notice tone="ok">✓ 有效票券：發行方簽章正確，持有人相符</Notice>
+          <div className="text-lg font-semibold">{r.ticket.title}</div>
+          <div className="text-sm text-ink-2">{r.ticket.subtitle}{r.ticket.seat ? ` · ${r.ticket.seat}` : ""}</div>
+          <div className="text-sm text-ink-2">{r.ticket.venue} · {new Date(r.ticket.startsAt).toLocaleString("zh-TW")}</div>
+          <div className="font-mono text-xs text-ink-3">持有人 {link.holder}</div>
+        </div>
+      ) : (
+        <Notice tone="danger">✕ 無效票券：簽章不符或持有人不正確</Notice>
+      )}
+    </Standalone>
   );
 }

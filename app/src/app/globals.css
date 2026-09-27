@@ -160,3 +160,30 @@ html.app-dark .btn-primary {
   background: linear-gradient(90deg, #f7709f 0%, #e0529c 55%, #c94fb8 100%);
   box-shadow: 0 10px 24px -12px rgba(239, 93, 168, 0.7);
 }
+
+/* ───────── 翻轉卡片（身分證、票券）───────── */
+.flip { perspective: 1400px; }
+.flip-inner {
+  position: relative;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 0.7s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.flip-inner.flipped { transform: rotateY(180deg); }
+.flip-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.flip-back { transform: rotateY(180deg); }
+@media (prefers-reduced-motion: reduce) {
+  .flip-inner { transition: none; }
+}
+/* 票券的撕線 */
+.ticket-perf {
+  background-image: linear-gradient(90deg, rgba(255, 255, 255, 0.45) 50%, transparent 50%);
+  background-size: 10px 1.5px;
+  background-repeat: repeat-x;
+  height: 1.5px;
+}

@@ -13,6 +13,7 @@ import { useCardConfirm } from "@/components/card-provider";
 import { useWallet } from "@/components/wallet-provider";
 import { AddrLink, Badge, Button, cx, EyeToggle, Field, HIDDEN_AMOUNT, inputCls, Notice, Panel, Spinner, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
 import { AgentsPanel } from "@/components/agents-panel";
+import { AddressInput } from "@/components/address-input";
 
 type Activity = { hash: Hex; from: Address; to: Address; value: bigint; block: bigint };
 
@@ -277,8 +278,8 @@ function WalletBody() {
           {tab === "send" && (
             <Panel title="轉帳 TWDC" className="rise">
               <div className="space-y-3">
-                <Field label="收款人" hint="代稱（例：@alice）或 0x 地址">
-                  <input className={inputCls} value={to} onChange={(e) => setTo(e.target.value)} placeholder="@alice 或 0x…" />
+                <Field label="收款人" hint="代稱（例：@alice）、0x 地址，或按右側圖示掃描收款 QR">
+                  <AddressInput value={to} onChange={setTo} onScanAmount={(v) => setAmount(formatUnits(v, TWDC_DECIMALS))} placeholder="@alice 或 0x…" />
                 </Field>
                 <Field label="金額">
                   <input className={inputCls} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />

@@ -21,6 +21,7 @@ import { encodeAbiParameters, getAddress, hexToBigInt, isAddress, keccak256, num
  * | pay     | 付款請求（收款 QR）      | to 地址或 @代稱、amt 最小單位、tok 代幣、memo、ref      |
  * | id      | 開啟某個身分（加聯絡人） | a 地址 或 h 代稱                                       |
  * | recover | 開啟恢復頁並帶入身分     | a 地址                                                 |
+ * | ticket  | 出示票券（驗票端掃描）   | t 票券 id、h 持有人地址、s 發行方簽章                  |
  */
 
 export const DEEPLINK_VERSION = "1";
@@ -31,7 +32,8 @@ export type PairLink = { action: "pair"; session: string; qx: Hex; qy: Hex; name
 export type PayLink = { action: "pay"; to: string; amount?: bigint; token?: Address; memo?: string; ref?: string };
 export type IdLink = { action: "id"; address?: Address; handle?: string };
 export type RecoverLink = { action: "recover"; address: Address };
-export type Deeplink = PairLink | PayLink | IdLink | RecoverLink;
+export type TicketLink = { action: "ticket"; id: string; holder: Address; sig: Hex };
+export type Deeplink = PairLink | PayLink | IdLink | RecoverLink | TicketLink;
 
 export class DeeplinkError extends Error {}
 
@@ -62,6 +64,11 @@ export function buildDeeplink(link: Deeplink, origin?: string): string {
       break;
     case "recover":
       q.set("a", link.address);
+      break;
+    case "ticket":
+      q.set("t", link.id);
+      q.set("h", link.holder);
+      q.set("s", link.sig);
       break;
   }
   return `${base(origin)}${link.action}?${q.toString()}`;
@@ -170,6 +177,13 @@ export function parseDeeplink(input: string, expectedOrigin?: string): Deeplink 
       if (!a || !isAddress(a)) throw new DeeplinkError("恢復連結內容不完整");
       return { action, address: getAddress(a) };
     }
+    case "ticket": {
+      const [t, h, sg] = [q.get("t"), q.get("h"), q.get("s")];
+      if (!t || !/^[0-9a-f]{8,32}$/.test(t) || !h || !isAddress(h) || !sg || !/^0x[0-9a-fA-F]{130}$/.test(sg)) {
+        throw new DeeplinkError("票券連結內容不完整");
+      }
+      return { action, id: t, holder: getAddress(h), sig: sg as Hex };
+    }
     default:
       throw new DeeplinkError(`不支援的動作「${action}」，請更新 App`);
   }
@@ -183,4 +197,21 @@ export function pairingCode(qx: Hex, qy: Hex): string {
   const h = keccak256(encodeAbiParameters([{ type: "string" }, { type: "bytes32" }, { type: "bytes32" }], ["CAFECA_PAIR", qx, qy]));
   const n = Number(BigInt(h) % 1_000_000n);
   return n.toString().padStart(6, "0").replace(/(\d{3})(\d{3})/, "$1 $2");
+}
+
+/**
+ * 解析掃描到的「收款人」QR：支援 CAFECA 深連結（pay／id／recover）、EIP-681（ethereum:0x…）、純地址與 @代稱。
+ * 回傳收款人與（若有）金額最小單位；無法辨識時丟出 DeeplinkError。
+ */
+export function parseRecipient(text: string, expectedOrigin?: string): { to: string; amount?: bigint } {
+  const raw = text.trim();
+  if (isAddress(raw)) return { to: getAddress(raw) };
+  if (/^@?[a-z0-9_]{3,20}$/i.test(raw) && !/^0x/i.test(raw)) return { to: raw.startsWith("@") ? raw : `@${raw}` };
+  const eip681 = raw.match(/^ethereum:(?:pay-)?(0x[0-9a-fA-F]{40})/);
+  if (eip681) return { to: getAddress(eip681[1]) };
+  const l = parseDeeplink(raw, expectedOrigin);
+  if (l.action === "pay") return { to: l.to, amount: l.amount };
+  if (l.action === "id") return { to: l.address ?? `@${l.handle}` };
+  if (l.action === "recover") return { to: l.address };
+  throw new DeeplinkError("這個 QR code 不是地址或付款請求");
 }

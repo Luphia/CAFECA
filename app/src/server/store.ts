@@ -10,7 +10,7 @@ export type ChatMessage = {
   from: string; // address 或 "system"
   to: string;
   fromDevice?: string;
-  kind: "text" | "pay.request" | "pay.receipt" | "agent.intent" | "system";
+  kind: "text" | "pay.request" | "pay.receipt" | "pay.transfer" | "agent.intent" | "system";
   /** 端對端加密內容：deviceId → 密文（system 訊息為明文 body） */
   envelopes?: Record<string, ChatEnvelope>;
   body?: unknown;
@@ -55,6 +55,20 @@ export type Store = {
   cardOrders: Record<string, CardOrder>;
   /** 裝置配對 session：新裝置只知道自己的公鑰，既有裝置確認後把身分地址回填 */
   pairings: Record<string, Pairing>;
+  /** 票券（活動、交通等），由票券發行方簽章，持有人以數位身分出示 */
+  tickets: Record<string, Ticket>;
+};
+
+export type Ticket = {
+  owner: string;
+  kind: "event" | "transit" | "coupon";
+  title: string;
+  subtitle: string;
+  venue: string;
+  startsAt: number;
+  seat?: string;
+  issuer: string;
+  issuedAt: number;
 };
 
 export type Pairing = { qx: string; qy: string; rpIdHash: string; name: string; exp: number; createdAt: number; address?: string };
@@ -70,7 +84,7 @@ export type KycRecord = {
 export type CardOrder = { owner: string; txHash: string; amount: string; paidAt: number; used: boolean; replaces?: string; issuedFor?: string };
 
 const FILE = path.join(process.cwd(), "data", "store.json");
-const EMPTY: Store = { handles: {}, profiles: {}, messages: [], agents: {}, visa: [], visaChannels: {}, kyc: {}, kycChallenges: {}, cardOrders: {}, pairings: {} };
+const EMPTY: Store = { handles: {}, profiles: {}, messages: [], agents: {}, visa: [], visaChannels: {}, kyc: {}, kycChallenges: {}, cardOrders: {}, pairings: {}, tickets: {} };
 
 let lock: Promise<unknown> = Promise.resolve();
 
