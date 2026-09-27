@@ -35,6 +35,7 @@ Passkey 需要安全環境：本機請用 `http://localhost:10002`，其他網�
 | `/chat` | 裝置金鑰上鏈、E2EE 訊息、付款請求與聊天內付款、AI 核准通知 | §7 |
 | `/security` | 裝置金鑰（同級、可互相移除）、實體卡與平台備援金鑰（不可移除）、連結其他裝置、額度、恢復狀態與取消、登出 | §4、§5 |
 | `/dl/auth` | Sign in with CAFECA：第三方網站免註冊登入（彈出視窗／整頁導向／跨裝置 QR），顯示網域與第一次連線提醒、可取消提供的資料；`/security` 列出登入過的網站。串接說明見[根目錄 README](../README.md#sign-in-with-cafeca第三方網站登入串接) | §15 |
+| `/dl/sign` | 簽章通道：登入時同意開啟後，網站可請你簽署訊息、EIP-712 或付款；並列顯示網站說明與錢包解析的實際內容，逐筆確認；跨裝置經加密中繼，錢包開啟時跳出提示；`/security` 可關閉通道 | §15.8 |
 | `/recover` | 找到身分 → 新裝置建立金鑰 → 實體卡立即新增，或以證件＋臉部影像讓平台備援金鑰發起恢復（48h／有卡 7 天） | §5 |
 
 ## 架構
@@ -50,6 +51,7 @@ Next.js Route Handlers（伺服器）
  ├─ /api/bundler     組 UserOp、paymaster 簽章、handleOps 送出
  ├─ /api/auth        ERC-1271 登入挑戰 → session cookie
  ├─ /api/signin      /.well-known/cafeca-configuration（第三方登入探索文件）
+ ├─ /api/channel     簽章通道中繼信箱（只存端對端加密的密文）
  ├─ /api/issuer      發卡方簽署卡片證明
  ├─ /api/kyc         模擬 KYC 單位（證件＋臉部影像、活體挑戰）
  ├─ /api/recovery    平台備援金鑰（模擬 HSM）：重新驗證本人後簽署恢復

@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { parseDeeplink, type AuthLink, type Deeplink, type PairLink, type TicketLink } from "@/lib/deeplink";
+import { parseDeeplink, type AuthLink, type Deeplink, type PairLink, type SignLink, type TicketLink } from "@/lib/deeplink";
 import { api } from "@/lib/client";
 import { AppShell } from "@/components/app-shell";
 import { CafecaTile } from "@/components/cafeca-logo";
 import { PairApprove } from "@/components/pair-approve";
 import { SignInApprove } from "@/components/signin-approve";
+import { ChannelApprove } from "@/components/channel-approve";
 import { useWallet } from "@/components/wallet-provider";
 import { Button, Notice, Panel, Spinner } from "@/components/ui";
 
@@ -32,7 +33,7 @@ export default function DeeplinkPage() {
   }, []);
 
   useEffect(() => {
-    if (!link || link.action === "pair" || link.action === "ticket" || link.action === "auth") return;
+    if (!link || link.action === "pair" || link.action === "ticket" || link.action === "auth" || link.action === "sign") return;
     if (link.action === "recover") return router.replace(`/recover?address=${link.address}`);
     if (!hydrated) return;
     if (!wallet) return router.replace("/start");
@@ -54,6 +55,7 @@ export default function DeeplinkPage() {
   }
   if (link?.action === "ticket") return <TicketVerify link={link} />;
   if (link?.action === "auth" && hydrated) return <AuthPage link={link} hasWallet={!!wallet} />;
+  if (link?.action === "sign" && hydrated) return <SignPage link={link} hasWallet={!!wallet} />;
   if (!link || !hydrated || link.action !== "pair") {
     return (
       <div className="grid min-h-dvh place-items-center">
@@ -104,6 +106,25 @@ function AuthPage({ link, hasWallet }: { link: AuthLink; hasWallet: boolean }) {
               <Button className="w-full">建立或登入 CAFECA 身分</Button>
             </Link>
           </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+/** 簽章通道請求（規格 §15.8） */
+function SignPage({ link, hasWallet }: { link: SignLink; hasWallet: boolean }) {
+  return (
+    <div className="mx-auto min-h-dvh max-w-md space-y-4 px-5 pb-10 pt-8">
+      <div className="flex items-center gap-2">
+        <CafecaTile className="size-7" />
+        <h1 className="text-lg font-bold">網站請求簽署</h1>
+      </div>
+      <Panel>
+        {hasWallet ? (
+          <ChannelApprove channelId={link.channel} requestId={link.requestId} />
+        ) : (
+          <Notice>這台裝置沒有登入 CAFECA 身分，無法處理這個簽署請求。請在當初登入網站的裝置上開啟。</Notice>
         )}
       </Panel>
     </div>

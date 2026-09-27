@@ -101,7 +101,7 @@ app.post("/api/cafeca/login", async (req, res) => {
 | --- | --- | --- |
 | `popup` | 桌機、一般瀏覽器（預設） | `cafeca.signIn({...})` |
 | `redirect` | 行動裝置、擋彈出視窗的環境（in-app browser） | `cafeca.redirect({ nonce, redirectUri })`。回到 `redirectUri` 頁面後呼叫 `CafecaConnect.handleRedirect()`，回傳 `{ response }`、`{ error }` 或 `null` |
-| `post` | 跨裝置：電腦顯示 QR code，用手機上的 CAFECA 掃描 | `cafeca.authLink({ nonce, mode: "post", responseUri: "/api/cafeca/callback" })`，把連結做成 QR code |
+| `post` | 跨裝置：電腦顯示 QR code，用手機上的 CAFECA 掃描 | `await cafeca.authLink({ nonce, mode: "post", responseUri: "/api/cafeca/callback" })`，把連結做成 QR code |
 
 - **`redirect`**：結果放在網址的 `#cafeca=`（fragment 不會送到任何伺服器），`handleRedirect()` 讀取後會清除網址列。
 - **`post`**：手機上的錢包以 `POST text/plain`（`no-cors`、不帶 cookie）把回應送到 `responseUri`。你的後端驗證後，把結果掛在該 nonce 上；電腦頁面再以 nonce 輪詢自己的後端，確認 nonce 屬於這個瀏覽器的 session 後才完成登入。
@@ -123,6 +123,7 @@ app.post("/api/cafeca/login", async (req, res) => {
 | `statement` |  | 最多 200 字 |
 | `claims` |  | `kyc_level`、`handle` |
 | `state` |  | 原樣帶回 |
+| `channel` |  | `{ "pub": "<P-256 公鑰 base64url>", "ttl": 秒 }`：要求開啟簽章通道（見第 7 節），`ttl` 最長 30 天 |
 
 錢包遇到任何不合規的欄位都會拒絕簽署。
 
@@ -133,14 +134,17 @@ app.post("/api/cafeca/login", async (req, res) => {
   "v": 1, "type": "cafeca:auth",
   "account": "0x…身分合約",
   "chainId": 8018,
-  "message": { "domain": "…", "uri": "…", "nonce": "…", "issuedAt": 0, "expiresAt": 0, "statement": "…", "claims": "handle,kyc_level" },
+  "message": { "domain": "…", "uri": "…", "nonce": "…", "issuedAt": 0, "expiresAt": 0, "statement": "…", "claims": "handle,kyc_level", "channel": "" },
   "signature": "0x…",
   "claims": { "handle": "…" },
-  "state": "…"
+  "state": "…",
+  "channel": { "id": "…", "walletPub": "…", "expiresAt": 0 }
 }
 ```
 
 `message.claims` 是使用者實際同意提供的項目，排序後以逗號分隔。
+
+`message.channel` 是 `<通道 id>.<網站公鑰>.<錢包公鑰>.<到期 Unix 秒>`，使用者沒有開啟簽章通道時為空字串；通道因此和這次登入由同一個簽章背書。
 
 拒絕時的回應為 `{ "v": 1, "type": "cafeca:auth", "error": "access_denied", "nonce": "…", "state": "…" }`。
 
@@ -148,7 +152,7 @@ app.post("/api/cafeca/login", async (req, res) => {
 
 ```
 domain  = { name: "CAFECA Sign-In", version: "1", chainId, verifyingContract: account }
-SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 expiresAt, string statement, string claims)
+SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 expiresAt, string statement, string claims, string channel)
 ```
 
 **驗證步驟**：
@@ -159,6 +163,7 @@ SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 ex
 4. 若 `claims` 含 `kyc_level`：呼叫 `attestation.levelOf(account)`，取得 `uint8` 等級。
 5. 若含 `handle`：呼叫 `GET https://<錢包網域>/api/profile?q=<account>` 取得代稱。代稱存在 CAFECA 伺服器，不上鏈；回應裡自稱的 `claims.handle` 不可信任。
 6. 可選：呼叫 `recovery.isPending(account)`，檢查身分是否正在恢復中。
+7. 若 `message.channel` 不是空字串：確認其中的網站公鑰是你自己產生的（`verify(…, { channelPub })`），到期時間不超過登入時間加 30 天。
 
 合約位址見 `/.well-known/cafeca-configuration` 的 `contracts`。
 
@@ -184,11 +189,69 @@ SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 ex
   - 錢包會提醒使用者確認「是自己剛打開的頁面」。
   - 敏感網站建議 QR 有效時間設短（例如 2 分鐘），在電腦畫面同時顯示登入裝置與位置，或者只提供 popup／redirect。
 - **AI 子錢包**是獨立地址，也能產生有效簽章。如果只接受本人登入，可以要求 `kyc_level ≥ 2`（AI 子錢包不會有實名等級）。
-- **登入簽章不能拿去做其他事**：錢包只會簽署自己組出的 `SignIn` 結構，不會替網站簽任意訊息，所以不會被誘騙簽下 Permit 等授權。
+- **登入簽章不能拿去做其他事**：登入畫面只會簽署錢包自己組出的 `SignIn` 結構。網站要簽其他內容必須走簽章通道，而通道會拒絕 `CAFECA Sign-In`、UserOperation 與以 CAFECA 合約為對象的結構，Permit 等授權也會顯示紅色警示。
 - **TODO：合約層的 ERC-7739 防重放封裝尚未實作。** 目前「登入簽章無法挪用到其他用途」是靠錢包端限制來保證，上線前會補上合約層保護。
 - **登入後的 session 由你的網站自行管理。** CAFECA 不發 access token，也無法替使用者撤銷你網站的 session；使用者在 CAFECA 的「安全 → 以 CAFECA 登入的網站」只看得到本機紀錄。
 
-### 7. 範例網站
+### 7. 簽章通道：登入後請使用者簽署或付款
+
+登入時加上 `channel: true`，使用者同意後，網站之後可以透過通道請使用者：
+
+- 簽署文字訊息（`signMessage`）
+- 簽署 EIP-712 結構（`signTypedData`）
+- 執行鏈上操作（`sendCalls`）：例如付款，gas 由平台贊助
+
+通道**不是授權**：每一筆都會在 CAFECA 錢包顯示你提供的說明，以及錢包自己解析的實際內容，由使用者確認後才簽署。網站無法在使用者不知情的情況下簽出任何東西。
+
+```js
+// 登入時要求開啟通道
+const response = await cafeca.signIn({ nonce: getNonce, channel: true }); // 或 { ttl: 7 * 86400 }
+await fetch("/api/cafeca/login", { method: "POST", body: JSON.stringify(response) });
+const ch = await cafeca.channel(response);      // 使用者沒有同意開啟時為 null
+localStorage.setItem("cafeca.channel", ch.id);   // 之後以 cafeca.restoreChannel(id) 取回
+
+// 每一筆都必須附上說明（description），沒有說明的請求錢包會直接拒絕
+const { signature } = await ch.signMessage("我同意會員條款 v3", { title: "同意會員條款", detail: "不會產生任何費用" });
+
+const { txHash, success } = await ch.sendCalls(
+  [{ to: TWDC, data: transferCalldata }],
+  { title: "付款 12 TWDC", detail: "訂單 A1024：耶加雪菲 200g" },
+  { transport: "relay", onPending: ({ link }) => showQr(link) }, // 跨裝置：送到使用者手機上的 CAFECA
+);
+```
+
+| 項目 | 說明 |
+| --- | --- |
+| `description` | **必填**：`title`（≤ 60 字）＋ `detail`（≤ 500 字，選填）。錢包標示為「網站說明」，並在下方列出錢包自己解析的實際內容供使用者核對，所以請寫得和實際內容一致 |
+| `transport` | `popup`（預設，同一台裝置，必須在點擊事件中呼叫）或 `relay`（CAFECA 中繼信箱，使用者在手機開啟 CAFECA 時會看到提示；`onPending` 會拿到可做成 QR 的連結） |
+| 回傳 | `signMessage`／`signTypedData` → `{ signature }`；`sendCalls` → `{ txHash, success }` |
+| 錯誤 `code` | `rejected`（使用者拒絕）、`invalid_request`（缺少說明、內容不合規或被防護封鎖）、`channel_closed`（使用者已關閉或過期）、`closed`、`timeout`、`popup_blocked` |
+
+後端驗證通道簽章：
+
+```ts
+const ok = await cafeca.verifyMessage({ account: session.userId, message, signature });
+const ok2 = await cafeca.verifyTypedData({ account: session.userId, typedData, signature });
+```
+
+EIP-712 的數值請使用 `number` 或十進位字串，不要傳 `bigint`（要經過 JSON）。
+
+**錢包端防護**（網站無法關閉）：
+
+- 拒絕 EIP-712 網域為 `CAFECA Sign-In`、`ERC4337`，或 `verifyingContract` 為使用者帳戶、EntryPoint、CAFECA 系統合約的訊息，避免借通道偽造登入或帳戶操作。
+- `sendCalls` 不可呼叫使用者帳戶本身與 CAFECA 模組（金鑰、恢復、支出通道、裝置目錄）。錢包只接受鏈上解析為轉帳、授權或一般合約呼叫的操作；額度與實體卡確認規則和使用者自己操作時相同。
+- 授權（Permit、approve）、無法解讀的合約呼叫、轉出 BOLT 會顯示紅色警示。
+- 每個請求 id 只處理一次，有效時間最長 10 分鐘；中繼信箱每個通道最多 5 筆待處理。
+
+**加密與中繼**：請求與回應都以 ECDH(網站金鑰, 錢包金鑰) → HKDF-SHA256 → AES-256-GCM 加密。
+
+- 網站端私鑰由 SDK 以不可匯出的 `CryptoKey` 存在 IndexedDB。
+- 中繼（`/api/channel`）只看得到密文、通道 id 與時間。
+- 使用者可以在 CAFECA「安全 → 以 CAFECA 登入的網站」關閉通道，之後的請求會收到 `channel_closed`。
+
+需要**不經使用者逐筆確認**的定期扣款或 AI 代付，請改用支出通道（規格 §6）：在鏈上預先設定額度，由代理人自行簽署。
+
+### 8. 範例網站
 
 ```bash
 cd app
@@ -196,7 +259,7 @@ npm run dev            # CAFECA 錢包：http://localhost:10002
 npm run demo:signin    # 範例第三方網站「咖啡豆小舖」：http://localhost:10003
 ```
 
-範例（[`app/examples/signin-demo/server.ts`](app/examples/signin-demo/server.ts)）示範了彈出視窗、整頁導向與跨裝置 QR code 三種方式，並包含 nonce 管理與 `cafeca-site.json`。
+範例（[`app/examples/signin-demo/server.ts`](app/examples/signin-demo/server.ts)）示範了彈出視窗、整頁導向與跨裝置 QR code 三種登入方式、nonce 管理與 `cafeca-site.json`，以及登入後透過簽章通道簽署會員條款、EIP-712 訂單與付款 12 TWDC（彈出視窗與中繼兩種傳遞方式）。
 
 可用的環境變數：
 

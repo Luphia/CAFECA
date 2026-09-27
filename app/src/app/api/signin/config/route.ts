@@ -15,11 +15,12 @@ export function GET(req: Request) {
     custom_scheme: "cafeca://auth",
     sdk: `${origin}/sdk/cafeca-connect.js`,
     modes: ["popup", "redirect", "post"],
+    channel: { endpoint: `${origin}/dl/sign`, relay: `${origin}/api/channel`, methods: ["sign_message", "sign_typed_data", "send_calls"], max_ttl_seconds: 30 * 24 * 3600 },
     claims_supported: CLAIMS,
     max_ttl_seconds: 600,
     chain: { id: CHAIN_ID, rpc: process.env.PUBLIC_RPC_URL ?? "https://boltchain.cafeca.io" },
     contracts: DEPLOYMENT.deployed
-      ? { factory: DEPLOYMENT.factory, keyring: DEPLOYMENT.keyring, attestation: DEPLOYMENT.attestation, recovery: DEPLOYMENT.recovery }
+      ? { factory: DEPLOYMENT.factory, keyring: DEPLOYMENT.keyring, attestation: DEPLOYMENT.attestation, recovery: DEPLOYMENT.recovery, twdc: DEPLOYMENT.twdc, entryPoint: DEPLOYMENT.entryPoint }
       : null,
     eip712: { name: "CAFECA Sign-In", version: "1", primaryType: "SignIn", verifyingContract: "<account>" },
   };

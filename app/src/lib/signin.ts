@@ -11,6 +11,8 @@ import { hashTypedData, isAddress, keccak256, toHex, type Address, type Hex } fr
 
 export const SIGNIN_VERSION = 1;
 export const MAX_TTL = 10 * 60; // 秒
+/** 簽章通道最長有效期（§15.8） */
+export const MAX_CHANNEL_TTL = 30 * 24 * 3600;
 export const MAGIC_1271 = "0x1626ba7e";
 
 /** 網站可要求的身分資料（account 一律提供） */
@@ -33,6 +35,8 @@ export type SignInRequest = {
   redirectUri?: string; // mode=redirect：必須與 domain 同源
   responseUri?: string; // mode=post（跨裝置 QR）：必須與 domain 同源
   state?: string; // 網站自訂，原樣帶回
+  /** 要求開啟簽章通道（§15.8）：pub＝網站瀏覽器產生的 P-256 ECDH 公鑰（65 bytes, base64url），ttl 秒 */
+  channel?: { pub: string; ttl?: number };
 };
 
 /** 使用者簽署的訊息（EIP-712 SignIn） */
@@ -44,6 +48,8 @@ export type SignInMessage = {
   expiresAt: number;
   statement: string;
   claims: string; // 使用者同意提供的 claims，以逗號分隔並排序
+  /** 簽章通道：<id>.<網站公鑰>.<錢包公鑰>.<到期 Unix 秒>；未開啟為空字串 */
+  channel: string;
 };
 
 export type SignInResponse = {
@@ -55,6 +61,8 @@ export type SignInResponse = {
   signature: Hex; // ERC-1271 簽章（前 20 bytes 為 validator 位址）
   claims: { handle?: string | null };
   state?: string;
+  /** 使用者同意開啟簽章通道時才有 */
+  channel?: { id: string; walletPub: string; expiresAt: number };
 };
 
 export type SignInError = { v: 1; type: "cafeca:auth"; error: "access_denied" | "invalid_request"; nonce?: string; state?: string };
@@ -68,6 +76,7 @@ export const SIGNIN_TYPES = {
     { name: "expiresAt", type: "uint256" },
     { name: "statement", type: "string" },
     { name: "claims", type: "string" },
+    { name: "channel", type: "string" },
   ],
 } as const;
 
@@ -148,6 +157,12 @@ export function parseRequest(encoded: string, now = Math.floor(Date.now() / 1000
   if (r.mode === "post" && (!r.responseUri || originOf(r.responseUri) !== origin)) throw new Error("response_uri 必須與網站同源");
   if (r.redirectUri && originOf(r.redirectUri) !== origin) throw new Error("redirect_uri 必須與網站同源");
   if (r.statement && r.statement.length > 200) throw new Error("說明文字過長");
+  if (r.channel !== undefined) {
+    if (!r.channel || typeof r.channel.pub !== "string" || !/^[A-Za-z0-9_-]{87}$/.test(r.channel.pub)) throw new Error("簽章通道公鑰格式錯誤");
+    const ttl = r.channel.ttl ?? 7 * 24 * 3600;
+    if (!Number.isInteger(ttl) || ttl < 60 || ttl > MAX_CHANNEL_TTL) throw new Error("簽章通道有效期須介於 1 分鐘到 30 天");
+    r.channel = { pub: r.channel.pub, ttl };
+  }
   r.claims = (r.claims ?? []).filter((c): c is Claim => (CLAIMS as readonly string[]).includes(c));
   return r;
 }
@@ -166,6 +181,8 @@ export type VerifyOptions = {
   recovery?: Address;
   /** 向 CAFECA 查詢帳戶目前的代稱（代稱存在 CAFECA 伺服器、不上鏈）；未提供時只採用回應裡自稱的代稱 */
   lookupHandle?: (account: Address) => Promise<string | null>;
+  /** 若網站在登入請求中要求了簽章通道，傳入自己的通道公鑰以確認一致 */
+  channelPub?: string;
   now?: number;
 };
 
@@ -175,7 +192,22 @@ export type VerifiedSignIn = {
   claims: { kyc_level?: number; handle?: string | null; handleVerified?: boolean };
   recoveryPending?: boolean;
   expiresAt: number;
+  /** 使用者同意開啟的簽章通道（已由登入簽章背書） */
+  channel?: SignInChannel;
 };
+
+export type SignInChannel = { id: string; sitePub: string; walletPub: string; expiresAt: number };
+
+export function channelString(c: SignInChannel | null): string {
+  return c ? `${c.id}.${c.sitePub}.${c.walletPub}.${c.expiresAt}` : "";
+}
+
+export function parseChannelString(s: string): SignInChannel | null {
+  if (!s) return null;
+  const m = /^([0-9a-f]{32})\.([A-Za-z0-9_-]{87})\.([A-Za-z0-9_-]{87})\.(\d{1,12})$/.exec(s);
+  if (!m) throw new Error("簽章通道格式錯誤");
+  return { id: m[1], sitePub: m[2], walletPub: m[3], expiresAt: Number(m[4]) };
+}
 
 const ERC1271_ABI = [
   { type: "function", name: "isValidSignature", stateMutability: "view", inputs: [{ type: "bytes32" }, { type: "bytes" }], outputs: [{ type: "bytes4" }] },
@@ -222,5 +254,10 @@ export async function verifySignInResponse(res: SignInResponse, o: VerifyOptions
   const recoveryPending = o.recovery
     ? Boolean(await o.readContract({ address: o.recovery, abi: PENDING_ABI, functionName: "isPending", args: [res.account] }))
     : undefined;
-  return { account: res.account, claims, recoveryPending, expiresAt: m.expiresAt };
+  const channel = parseChannelString(m.channel ?? "");
+  if (channel) {
+    if (channel.expiresAt > m.issuedAt + MAX_CHANNEL_TTL + 60) throw new Error("簽章通道有效期不合理");
+    if (o.channelPub && channel.sitePub !== o.channelPub) throw new Error("簽章通道公鑰不是你的網站產生的");
+  }
+  return { account: res.account, claims, recoveryPending, expiresAt: m.expiresAt, channel: channel ?? undefined };
 }

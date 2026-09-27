@@ -6,7 +6,9 @@ import { api } from "@/lib/client";
 import { encode1271 } from "@/lib/userop";
 import { signWithPasskey } from "@/lib/webauthn";
 import { findSignIn, recordSignIn, subscribeSignIns } from "@/lib/signin-history";
+import { newChannel, storeChannel } from "@/lib/channel-store";
 import {
+  channelString,
   claimsString,
   encodePayload,
   signInHash,
@@ -60,7 +62,7 @@ function useSiteMeta(domain: string): SiteMeta | null {
   return meta;
 }
 
-function useNow() {
+export function useNow() {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
     const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
@@ -114,6 +116,7 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
     kyc_level: request.claims?.includes("kyc_level") ?? false,
     handle: request.claims?.includes("handle") ?? false,
   }));
+  const [allowChannel, setAllowChannel] = useState(!!request.channel);
   const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<"posted" | "denied" | null>(null);
@@ -128,6 +131,11 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
     try {
       if (!chain.deployed && chain.loaded) throw new Error("身分合約尚未部署，無法簽署登入");
       const granted = (Object.keys(grant) as Claim[]).filter((c) => grant[c] && request.claims?.includes(c));
+      // 簽章通道：錢包產生自己的通道金鑰，通道 id 與雙方公鑰一起寫進登入簽章
+      const ch =
+        request.channel && allowChannel
+          ? await newChannel(w.address, request.domain, request.channel.pub, request.channel.ttl!, request.issuedAt, meta?.name)
+          : null;
       const message: SignInMessage = {
         domain: request.domain,
         uri: request.uri,
@@ -136,6 +144,7 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
         expiresAt: request.expiresAt,
         statement: request.statement ?? "",
         claims: claimsString(granted),
+        channel: channelString(ch && { id: ch.id, sitePub: ch.sitePub, walletPub: ch.walletPub, expiresAt: ch.expiresAt }),
       };
       const hash = signInHash(w.address, CHAIN_ID, message);
       const { keyId, sig } = await signWithPasskey(hash, w.passkeys);
@@ -148,7 +157,9 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
         signature: encode1271(DEPLOYMENT.keyring, keyId, sig),
         claims: granted.includes("handle") ? { handle } : {},
         state: request.state,
+        ...(ch ? { channel: { id: ch.id, walletPub: ch.walletPub, expiresAt: ch.expiresAt } } : {}),
       };
+      if (ch) storeChannel(ch); // 簽署完成才保存；redirect 模式會立刻離開頁面，所以要在送出前存好
       recordSignIn(w.address, request.domain, message.claims, meta?.name);
       const r = await deliver(request, res);
       if (r === "posted") setDone("posted");
@@ -234,6 +245,24 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
           ))}
           <p className="text-[11px] text-ink-3">實名等級由網站直接向鏈上查詢，不會提供姓名、生日或證號。</p>
         </div>
+      )}
+
+      {request.channel && (
+        <label className="flex items-start gap-3 rounded-xl border border-line px-3 py-2.5 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-4 accent-[var(--brand)]"
+            checked={allowChannel}
+            onChange={(e) => setAllowChannel(e.target.checked)}
+            data-testid="allow-channel"
+          />
+          <span>
+            <span className="font-medium">開啟簽章通道</span>
+            <span className="block text-xs text-ink-3">
+              允許這個網站之後請你簽署訊息或付款，有效到 {new Date((request.issuedAt + (request.channel.ttl ?? 0)) * 1000).toLocaleDateString("zh-TW")}。每一次都會在這裡顯示網站的說明與實際內容，由你確認後才會簽署；隨時可以在「安全」頁關閉。
+            </span>
+          </span>
+        </label>
       )}
 
       {request.mode === "post" && (

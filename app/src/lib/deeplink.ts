@@ -24,6 +24,7 @@ import { encodeAbiParameters, getAddress, hexToBigInt, isAddress, keccak256, num
  * | recover | 開啟恢復頁並帶入身分     | a 地址                                                 |
  * | ticket  | 出示票券（驗票端掃描）   | t 票券 id、h 持有人地址、s 發行方簽章                  |
  * | auth    | 第三方網站登入（§15）    | req 登入請求 base64url(JSON)，格式見 src/lib/signin.ts  |
+ * | sign    | 簽章通道請求（§15.8）    | ch 通道 id、r 中繼信箱內的請求 id（彈出視窗模式不帶）   |
  */
 
 export const DEEPLINK_VERSION = "1";
@@ -36,7 +37,8 @@ export type IdLink = { action: "id"; address?: Address; handle?: string };
 export type RecoverLink = { action: "recover"; address: Address };
 export type TicketLink = { action: "ticket"; id: string; holder: Address; sig: Hex };
 export type AuthLink = { action: "auth"; request: SignInRequest; raw: string };
-export type Deeplink = PairLink | PayLink | IdLink | RecoverLink | TicketLink | AuthLink;
+export type SignLink = { action: "sign"; channel: string; requestId?: string };
+export type Deeplink = PairLink | PayLink | IdLink | RecoverLink | TicketLink | AuthLink | SignLink;
 
 export class DeeplinkError extends Error {}
 
@@ -75,6 +77,10 @@ export function buildDeeplink(link: Deeplink, origin?: string): string {
       break;
     case "auth":
       q.set("req", link.raw);
+      break;
+    case "sign":
+      q.set("ch", link.channel);
+      if (link.requestId) q.set("r", link.requestId);
       break;
   }
   return `${base(origin)}${link.action}?${q.toString()}`;
@@ -198,6 +204,11 @@ export function parseDeeplink(input: string, expectedOrigin?: string): Deeplink 
       } catch (e) {
         throw new DeeplinkError(e instanceof Error ? e.message : "登入請求無效");
       }
+    }
+    case "sign": {
+      const [ch, r] = [q.get("ch"), q.get("r")];
+      if (!ch || !/^[0-9a-f]{32}$/.test(ch) || (r !== null && !/^[0-9a-f]{16,64}$/.test(r))) throw new DeeplinkError("簽章連結內容不完整");
+      return { action, channel: ch, requestId: r ?? undefined };
     }
     default:
       throw new DeeplinkError(`不支援的動作「${action}」，請更新 App`);

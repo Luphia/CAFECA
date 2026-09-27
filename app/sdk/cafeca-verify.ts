@@ -9,7 +9,7 @@
  * 驗證完全在你這一端完成：用公開 RPC 呼叫使用者身分合約的 isValidSignature（ERC-1271），
  * 不需要 API key、不需要向 CAFECA 註冊，也不會把使用者的登入告訴 CAFECA 伺服器。
  */
-import { createPublicClient, http, type Address } from "viem";
+import { createPublicClient, hashMessage, hashTypedData, http, type Address, type Hex, type TypedDataDefinition } from "viem";
 import { verifySignInResponse, type SignInResponse, type VerifiedSignIn } from "../src/lib/signin";
 
 export type { SignInResponse, VerifiedSignIn };
@@ -17,7 +17,7 @@ export type { SignInResponse, VerifiedSignIn };
 export type CafecaConfiguration = {
   issuer: string;
   chain: { id: number; rpc: string };
-  contracts: { factory: Address; keyring: Address; attestation: Address; recovery: Address } | null;
+  contracts: { factory: Address; keyring: Address; attestation: Address; recovery: Address; twdc?: Address; entryPoint?: Address } | null;
 };
 
 export type VerifierOptions = {
@@ -51,7 +51,7 @@ export function createCafecaVerifier(opts: VerifierOptions) {
      * @param domain 你的網站 origin（例：https://shop.example），必須和使用者簽署的訊息完全相同
      * @param nonce  你為這次登入產生、尚未使用過的 nonce；驗證成功後請立刻作廢
      */
-    async verify(response: SignInResponse, p: { domain: string; nonce: string; now?: number }): Promise<VerifiedSignIn> {
+    async verify(response: SignInResponse, p: { domain: string; nonce: string; channelPub?: string; now?: number }): Promise<VerifiedSignIn> {
       const c = await loadConfig();
       const pc = (client ??= createPublicClient({ transport: http(opts.rpcUrl ?? c.chain.rpc) }));
       return verifySignInResponse(response, {
@@ -61,6 +61,7 @@ export function createCafecaVerifier(opts: VerifierOptions) {
         attestation: c.contracts?.attestation,
         recovery: c.contracts?.recovery,
         now: p.now,
+        channelPub: p.channelPub,
         lookupHandle:
           opts.resolveHandle === false
             ? undefined
@@ -73,8 +74,31 @@ export function createCafecaVerifier(opts: VerifierOptions) {
         readContract: (q) => pc.readContract(q as Parameters<typeof pc.readContract>[0]),
       });
     },
+
+    /** 驗證簽章通道回傳的 sign_message 簽章（ERC-1271 isValidSignature(hashMessage)） */
+    async verifyMessage(p: { account: Address; message: string; signature: Hex }): Promise<boolean> {
+      return this.isValid(p.account, hashMessage(p.message), p.signature);
+    },
+
+    /** 驗證簽章通道回傳的 sign_typed_data 簽章 */
+    async verifyTypedData(p: { account: Address; typedData: TypedDataDefinition; signature: Hex }): Promise<boolean> {
+      return this.isValid(p.account, hashTypedData(p.typedData), p.signature);
+    },
+
+    async isValid(account: Address, hash: Hex, signature: Hex): Promise<boolean> {
+      const c = await loadConfig();
+      const pc = (client ??= createPublicClient({ transport: http(opts.rpcUrl ?? c.chain.rpc) }));
+      const magic = await pc
+        .readContract({ address: account, abi: ERC1271, functionName: "isValidSignature", args: [hash, signature] })
+        .catch(() => "0x");
+      return magic === "0x1626ba7e";
+    },
   };
 }
+
+const ERC1271 = [
+  { type: "function", name: "isValidSignature", stateMutability: "view", inputs: [{ type: "bytes32" }, { type: "bytes" }], outputs: [{ type: "bytes4" }] },
+] as const;
 
 /** 產生 nonce（128 bits，base64url） */
 export function newNonce(): string {
