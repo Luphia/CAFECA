@@ -13,6 +13,7 @@ import { execCall } from "@/lib/userop";
 import { registerPasskey } from "@/lib/webauthn";
 import { parseDeeplink, type PairLink } from "@/lib/deeplink";
 import { PairApprove } from "@/components/pair-approve";
+import { SignInHistory } from "@/components/signin-history";
 import { QrScanner } from "@/components/qr-scanner";
 import { PasskeyIcon, ScanIcon } from "@/components/icons";
 import { AppShell } from "@/components/app-shell";
@@ -339,6 +340,8 @@ function SecurityBody() {
           </ul>
         </Panel>
       )}
+
+      <SignInHistory account={w.address} />
 
       <Notice>
         遺失裝置時：還有其他裝置就直接移除遺失的那台；有實體卡可立即把新裝置加回；全部遺失時，用平台備援金鑰重新驗證本人（證件＋臉部影像），等待 48 小時（已綁卡 7 天）後生效。Passkey 若有雲端同步，換機後直接登入即可。

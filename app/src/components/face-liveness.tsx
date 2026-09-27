@@ -42,7 +42,7 @@ export function FaceLiveness({ onDone }: { onDone: (r: LivenessResult | null) =>
   const [needNeutral, setNeedNeutral] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ url: string; seconds: number } | null>(null);
+  const [result, setResult] = useState<{ seconds: number } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const simRef = useRef<() => void>(() => undefined);
   // 每按一次「開始錄製」遞增，effect 只依這個值執行（避免 phase 變化時中斷相機）
@@ -151,7 +151,8 @@ export function FaceLiveness({ onDone }: { onDone: (r: LivenessResult | null) =>
               const seconds = (performance.now() - t0) / 1000;
               stream?.getTracks().forEach((tr) => tr.stop());
               audioCtx?.close().catch(() => undefined);
-              setResult({ url: URL.createObjectURL(blob), seconds });
+              // 錄影只上傳給後台驗證，不在畫面上回放
+              setResult({ seconds });
               setPhase("done");
               onDone({ video: blob, seconds, challengeId: ch.id, log });
             };
@@ -300,22 +301,22 @@ export function FaceLiveness({ onDone }: { onDone: (r: LivenessResult | null) =>
 
   if (phase === "done" && result) {
     return (
-      <div className="space-y-2">
-        <video src={result.url} controls playsInline className="aspect-square w-full rounded-2xl bg-black object-cover" />
-        <div className="flex items-center justify-between text-xs text-ink-3">
-          <span>已完成 6 個動作 · {result.seconds.toFixed(1)} 秒</span>
-          <button
-            className="text-brand"
-            onClick={() => {
-              URL.revokeObjectURL(result.url);
-              setResult(null);
-              onDone(null);
-              start();
-            }}
-          >
-            重新錄製
-          </button>
+      <div className="flex items-center gap-3 rounded-2xl border border-ok/40 bg-ok-bg p-4">
+        <span className="grid size-10 shrink-0 place-items-center rounded-full bg-ok text-lg font-bold text-white">✓</span>
+        <div className="flex-1">
+          <div className="text-sm font-semibold text-ok">已完成 6 個動作</div>
+          <div className="text-xs text-ink-3">影像只會傳送給 CAFECA 後台驗證，不會保存在這台裝置</div>
         </div>
+        <button
+          className="text-xs text-brand"
+          onClick={() => {
+            setResult(null);
+            onDone(null);
+            start();
+          }}
+        >
+          重新錄製
+        </button>
       </div>
     );
   }

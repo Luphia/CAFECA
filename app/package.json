@@ -6,6 +6,7 @@
     "dev": "next dev -p 10002",
     "build": "next build",
     "start": "next start -p 10002",
+    "demo:signin": "tsx examples/signin-demo/server.ts",
     "lint": "eslint",
     "deploy": "tsx scripts/deploy.ts",
     "typecheck": "tsc --noEmit",

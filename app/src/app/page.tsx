@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { CardFront, FingerprintMark } from "@/components/cafeca-card";
-import { CafecaTile } from "@/components/cafeca-logo";
+import { CardFront } from "@/components/cafeca-card";
+import { CafecaMark, CafecaTile } from "@/components/cafeca-logo";
 import { LandingCta } from "@/components/landing-cta";
 
 export const metadata: Metadata = {
@@ -66,7 +66,7 @@ export default function Landing() {
                 <br />→ 0x8a3f…c21e
               </div>
               <div className="mt-2 flex items-center gap-2 text-xs text-ink-2">
-                <FingerprintMark className="size-4 text-brand" /> 按指紋確認
+                <CafecaMark className="size-4 text-brand" /> 按指紋確認
               </div>
             </div>
           </div>

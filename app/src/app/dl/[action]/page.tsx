@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { parseDeeplink, type Deeplink, type PairLink, type TicketLink } from "@/lib/deeplink";
+import { parseDeeplink, type AuthLink, type Deeplink, type PairLink, type TicketLink } from "@/lib/deeplink";
 import { api } from "@/lib/client";
 import { AppShell } from "@/components/app-shell";
+import { CafecaTile } from "@/components/cafeca-logo";
 import { PairApprove } from "@/components/pair-approve";
+import { SignInApprove } from "@/components/signin-approve";
 import { useWallet } from "@/components/wallet-provider";
 import { Button, Notice, Panel, Spinner } from "@/components/ui";
 
@@ -30,7 +32,7 @@ export default function DeeplinkPage() {
   }, []);
 
   useEffect(() => {
-    if (!link || link.action === "pair" || link.action === "ticket") return;
+    if (!link || link.action === "pair" || link.action === "ticket" || link.action === "auth") return;
     if (link.action === "recover") return router.replace(`/recover?address=${link.address}`);
     if (!hydrated) return;
     if (!wallet) return router.replace("/start");
@@ -51,6 +53,7 @@ export default function DeeplinkPage() {
     );
   }
   if (link?.action === "ticket") return <TicketVerify link={link} />;
+  if (link?.action === "auth" && hydrated) return <AuthPage link={link} hasWallet={!!wallet} />;
   if (!link || !hydrated || link.action !== "pair") {
     return (
       <div className="grid min-h-dvh place-items-center">
@@ -77,6 +80,33 @@ function PairPage({ link }: { link: PairLink }) {
         <PairApprove link={link} onCancel={() => router.replace("/security")} />
       </Panel>
     </AppShell>
+  );
+}
+
+/** 第三方網站登入（規格 §15）：不經 AppShell，popup 視窗也能完整顯示 */
+function AuthPage({ link, hasWallet }: { link: AuthLink; hasWallet: boolean }) {
+  const next = typeof window !== "undefined" ? window.location.pathname + window.location.search : "";
+  return (
+    <div className="mx-auto min-h-dvh max-w-md space-y-4 px-5 pb-10 pt-8">
+      <div className="flex items-center gap-2">
+        <CafecaTile className="size-7" />
+        <h1 className="text-lg font-bold">以 CAFECA 身分登入</h1>
+      </div>
+      <Panel>
+        {hasWallet ? (
+          <SignInApprove request={link.request} />
+        ) : (
+          <div className="space-y-3">
+            <Notice>
+              <span className="font-mono">{new URL(link.request.domain).host}</span> 想以 CAFECA 身分登入，但這台裝置還沒有登入 CAFECA。先建立或登入身分，完成後會回到這個畫面。
+            </Notice>
+            <Link href={`/start?next=${encodeURIComponent(next)}`} className="block">
+              <Button className="w-full">建立或登入 CAFECA 身分</Button>
+            </Link>
+          </div>
+        )}
+      </Panel>
+    </div>
   );
 }
 

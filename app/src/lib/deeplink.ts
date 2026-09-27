@@ -1,4 +1,5 @@
 import { p256 } from "@noble/curves/p256";
+import { parseRequest, type SignInRequest } from "./signin";
 import { encodeAbiParameters, getAddress, hexToBigInt, isAddress, keccak256, numberToHex, type Address, type Hex } from "viem";
 
 /**
@@ -22,6 +23,7 @@ import { encodeAbiParameters, getAddress, hexToBigInt, isAddress, keccak256, num
  * | id      | 開啟某個身分（加聯絡人） | a 地址 或 h 代稱                                       |
  * | recover | 開啟恢復頁並帶入身分     | a 地址                                                 |
  * | ticket  | 出示票券（驗票端掃描）   | t 票券 id、h 持有人地址、s 發行方簽章                  |
+ * | auth    | 第三方網站登入（§15）    | req 登入請求 base64url(JSON)，格式見 src/lib/signin.ts  |
  */
 
 export const DEEPLINK_VERSION = "1";
@@ -33,7 +35,8 @@ export type PayLink = { action: "pay"; to: string; amount?: bigint; token?: Addr
 export type IdLink = { action: "id"; address?: Address; handle?: string };
 export type RecoverLink = { action: "recover"; address: Address };
 export type TicketLink = { action: "ticket"; id: string; holder: Address; sig: Hex };
-export type Deeplink = PairLink | PayLink | IdLink | RecoverLink | TicketLink;
+export type AuthLink = { action: "auth"; request: SignInRequest; raw: string };
+export type Deeplink = PairLink | PayLink | IdLink | RecoverLink | TicketLink | AuthLink;
 
 export class DeeplinkError extends Error {}
 
@@ -69,6 +72,9 @@ export function buildDeeplink(link: Deeplink, origin?: string): string {
       q.set("t", link.id);
       q.set("h", link.holder);
       q.set("s", link.sig);
+      break;
+    case "auth":
+      q.set("req", link.raw);
       break;
   }
   return `${base(origin)}${link.action}?${q.toString()}`;
@@ -183,6 +189,15 @@ export function parseDeeplink(input: string, expectedOrigin?: string): Deeplink 
         throw new DeeplinkError("票券連結內容不完整");
       }
       return { action, id: t, holder: getAddress(h), sig: sg as Hex };
+    }
+    case "auth": {
+      const raw = q.get("req");
+      if (!raw || raw.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(raw)) throw new DeeplinkError("登入連結內容不完整");
+      try {
+        return { action, request: parseRequest(raw), raw };
+      } catch (e) {
+        throw new DeeplinkError(e instanceof Error ? e.message : "登入請求無效");
+      }
     }
     default:
       throw new DeeplinkError(`不支援的動作「${action}」，請更新 App`);

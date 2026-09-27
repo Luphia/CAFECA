@@ -14,6 +14,7 @@ npm run deploy
 npm run deploy
 
 npm run dev   # http://localhost:10002
+npm run demo:signin   # 選用：第三方登入範例網站 http://localhost:10003
 ```
 
 已經部署過、之後合約有變更（例如 v0.3 金鑰模型）時，`npm run deploy` 會補上缺少的服務金鑰（`GUARDIAN_ROOT_KEY`、`GUARDIAN_SEED`）並整套重新部署；舊身分不會搬到新合約，需重新建立。只改了工廠合約時可用 `npm run deploy -- --factory`。
@@ -33,6 +34,7 @@ Passkey 需要安全環境：本機請用 `http://localhost:10002`，其他網�
 | `/agents` | AI 代理與支出通道、x402 商家購買、超額 intent 以卡片核准、撥款、撤銷 | §6 |
 | `/chat` | 裝置金鑰上鏈、E2EE 訊息、付款請求與聊天內付款、AI 核准通知 | §7 |
 | `/security` | 裝置金鑰（同級、可互相移除）、實體卡與平台備援金鑰（不可移除）、連結其他裝置、額度、恢復狀態與取消、登出 | §4、§5 |
+| `/dl/auth` | Sign in with CAFECA：第三方網站免註冊登入（彈出視窗／整頁導向／跨裝置 QR），顯示網域與第一次連線提醒、可取消提供的資料；`/security` 列出登入過的網站。串接說明見[根目錄 README](../README.md#sign-in-with-cafeca第三方網站登入串接) | §15 |
 | `/recover` | 找到身分 → 新裝置建立金鑰 → 實體卡立即新增，或以證件＋臉部影像讓平台備援金鑰發起恢復（48h／有卡 7 天） | §5 |
 
 ## 架構
@@ -47,6 +49,7 @@ Passkey 需要安全環境：本機請用 `http://localhost:10002`，其他網�
 Next.js Route Handlers（伺服器）
  ├─ /api/bundler     組 UserOp、paymaster 簽章、handleOps 送出
  ├─ /api/auth        ERC-1271 登入挑戰 → session cookie
+ ├─ /api/signin      /.well-known/cafeca-configuration（第三方登入探索文件）
  ├─ /api/issuer      發卡方簽署卡片證明
  ├─ /api/kyc         模擬 KYC 單位（證件＋臉部影像、活體挑戰）
  ├─ /api/recovery    平台備援金鑰（模擬 HSM）：重新驗證本人後簽署恢復
@@ -85,11 +88,6 @@ npm run build
 ```
 
 合約 ABI 在 `src/lib/contracts/abis.ts`，部署用 bytecode 在 `scripts/artifacts/`，都由 `../contracts` 編譯產生。
-
-## KYC 測試模式
-
-沒有真人臉部的環境（例如 E2E 測試）可在 `.env.local` 設 `NEXT_PUBLIC_KYC_SIMULATE=1`：活體步驟改為按鈕模擬完成動作，不載入臉部模型。**正式環境不得開啟。**
-證件、臉部影像與動作序列存放在 `data/kyc/<身分地址>/<案件>/`（只有浮水印版），供後台驗證流程處理。
 
 ## KYC 測試模式
 

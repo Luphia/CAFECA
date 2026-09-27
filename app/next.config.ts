@@ -19,6 +19,14 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_CAFECA_DEPLOYMENT: loadDeployment(),
   },
+  // Sign in with CAFECA（規格 §15）：公開的探索文件
+  async rewrites() {
+    return [{ source: "/.well-known/cafeca-configuration", destination: "/api/signin/config" }];
+  },
+  // 瀏覽器 SDK 允許任何網站以 <script> 或 import 載入
+  async headers() {
+    return [{ source: "/sdk/:path*", headers: [{ key: "access-control-allow-origin", value: "*" }, { key: "cache-control", value: "public, max-age=300" }] }];
+  },
 };
 
 export default nextConfig;

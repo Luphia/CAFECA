@@ -18,6 +18,12 @@ import { Button, Notice, Panel, Spinner, TxLink, errMsg, short, useToast } from 
 
 const noop = () => () => {};
 
+/** 從深連結（例如第三方登入）過來時，完成後回到原畫面；只接受站內 /dl/ 路徑 */
+function dest() {
+  const n = new URLSearchParams(window.location.search).get("next");
+  return n && n.startsWith("/dl/") ? n : "/wallet";
+}
+
 export default function Onboarding() {
   const { wallet, hydrated, refreshSession } = useWallet();
   const router = useRouter();
@@ -28,7 +34,7 @@ export default function Onboarding() {
   const [tx, setTx] = useState<Hex | null>(null);
 
   useEffect(() => {
-    if (hydrated && wallet) router.replace("/wallet");
+    if (hydrated && wallet) router.replace(dest());
   }, [hydrated, wallet, router]);
 
   const log = (s: string) => setProgress((p) => [...p, s]);
@@ -44,7 +50,7 @@ export default function Onboarding() {
       }
       saveWallet({ address: found.address, passkeys: [found.passkey], createdAt: Date.now() });
       toast("已找到你的身分，請再用 Passkey 解鎖一次", "ok");
-      router.replace("/wallet");
+      router.replace(dest());
     } catch (e) {
       toast(errMsg(e), "danger");
     } finally {
@@ -84,7 +90,7 @@ export default function Onboarding() {
       await api("/api/faucet", { address }).catch(() => undefined);
       toast("數位身分已建立，請再用 Passkey 解鎖一次", "ok");
       await refreshSession();
-      router.replace("/wallet");
+      router.replace(dest());
     } catch (e) {
       toast(errMsg(e), "danger");
       log("失敗：" + errMsg(e));

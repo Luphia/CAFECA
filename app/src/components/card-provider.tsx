@@ -6,7 +6,8 @@ import { DEPLOYMENT, OP_KIND_LABEL, TWDC_DECIMALS } from "@/lib/config";
 import { cardSign, getCard } from "@/lib/card-sim";
 import { ctxdOf, type CardConfirm } from "@/lib/client";
 import type { TxSummary } from "@/lib/userop";
-import { CardBack, Contactless, FingerprintMark } from "./cafeca-card";
+import { CardBack, Contactless } from "./cafeca-card";
+import { CafecaMarkGradient } from "./cafeca-logo";
 import { Button, cx, short } from "./ui";
 
 type Pending = {
@@ -178,7 +179,7 @@ export function CardProvider({ children }: { children: ReactNode }) {
                   )}
                   aria-label="按指紋確認"
                 >
-                  <FingerprintMark className="size-10" />
+                  <CafecaMarkGradient className="size-11" />
                 </button>
               )}
               {phase === "confirm" && <span className="text-sm text-ink-2">內容正確？按下指紋感應器確認</span>}

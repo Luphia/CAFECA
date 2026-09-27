@@ -17,6 +17,7 @@ export function Button({
   type = "button",
   className,
   size = "md",
+  testId,
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -26,10 +27,12 @@ export function Button({
   type?: "button" | "submit";
   className?: string;
   size?: "sm" | "md";
+  testId?: string;
 }) {
   return (
     <button
       type={type}
+      data-testid={testId}
       onClick={onClick}
       disabled={disabled || busy}
       className={cx(
