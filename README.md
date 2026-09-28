@@ -123,7 +123,7 @@ app.post("/api/cafeca/login", async (req, res) => {
 | `statement` |  | 最多 200 字 |
 | `claims` |  | `kyc_level`、`handle` |
 | `state` |  | 原樣帶回 |
-| `channel` |  | `{ "pub": "<P-256 公鑰 base64url>", "ttl": 秒 }`：要求開啟簽章通道（見第 7 節），`ttl` 最長 30 天 |
+| `channel` |  | `{ "pub": "<P-256 公鑰 base64url>", "ttl": 秒 }`：要求開啟簽章通道（見第 8 節），`ttl` 最長 30 天 |
 
 錢包遇到任何不合規的欄位都會拒絕簽署。
 
@@ -167,7 +167,121 @@ SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 ex
 
 合約位址見 `/.well-known/cafeca-configuration` 的 `contracts`。
 
-### 5. 網站資訊（選填）
+### 5. CAFECA 簽章編碼規格
+
+CAFECA 身分是智能合約帳戶，簽章由使用者的 FIDO2 金鑰（Passkey 或實體卡）以 **WebAuthn ES256（P-256）** 產生，再包成帳戶合約看得懂的格式。
+
+**建議一律呼叫 `account.isValidSignature(hash, signature)` 驗證，不要自行解析。** 原因有兩個：
+
+- 金鑰會新增、移除、輪替，只有合約知道目前哪些有效。
+- 上線前會加上 ERC-7739 包裝（見第 7 節），格式會改變，但 `isValidSignature` 的呼叫方式不變。
+
+以下規格給需要除錯、稽核，或在沒有 EVM 函式庫的環境實作的人。
+
+#### 5.1 各情境簽署的 hash
+
+| 情境 | 被簽的 32-byte `hash` | 簽章格式 |
+| --- | --- | --- |
+| 登入 | `hashTypedData`（`CAFECA Sign-In`，見第 4 節） | ERC-1271 |
+| 簽章通道 `signMessage` | `hashMessage(message)`（EIP-191：`"\x19Ethereum Signed Message:\n" + len + message` 再 keccak256，len 為 UTF-8 位元組數的十進位字串） | ERC-1271 |
+| 簽章通道 `signTypedData` | `hashTypedData(typedData)`（EIP-712） | ERC-1271 |
+| 鏈上操作（UserOperation） | EntryPoint v0.8 的 `userOpHash` | `UserOp.signature` |
+
+#### 5.2 ERC-1271 簽章版面
+
+```
+signature      = validator (20 bytes) ‖ abi.encode(SignatureData)
+
+SignatureData  = (bytes32 keyId, WebAuthnSig sig)
+WebAuthnSig    = (bytes   authenticatorData,
+                  string  clientDataJSON,
+                  uint256 challengeIndex,
+                  uint256 typeIndex,
+                  bytes32 r,
+                  bytes32 s)
+```
+
+帳戶合約取前 20 bytes 當作 validator 位址，確認是已安裝的模組後，把其餘 bytes 交給該模組的 `isValidSignatureWithSender`。
+
+| 欄位 | 說明 |
+| --- | --- |
+| `validator` | 裝置 Passkey 與實體卡的簽章一律是 **KeyringValidator**，位址見 `/.well-known/cafeca-configuration` 的 `contracts.keyring` |
+| `keyId` | `keccak256(abi.encode(qx, qy))`，即 P-256 公鑰座標的雜湊；公鑰可用 `keyring.getKey(account, keyId)` 查詢 |
+| `authenticatorData` | 瀏覽器回傳的原始 bytes：`rpIdHash (32) ‖ flags (1) ‖ signCount (4) ‖ [擴充]`。flags 必須有 UP（0x01）與 UV（0x04），不可有 AT（0x40） |
+| `clientDataJSON` | 瀏覽器回傳的原始 UTF-8 JSON 字串，**不可重新排版或重新序列化** |
+| `challengeIndex` | `"challenge":"` 在 `clientDataJSON` 中的起始 byte 位置 |
+| `typeIndex` | `"type":"webauthn.get"` 在 `clientDataJSON` 中的起始 byte 位置 |
+| `r`, `s` | P-256 簽章，**`s` 必須 ≤ n/2**（low-s，防止簽章延展），錢包會自動正規化 |
+
+實際的 abi.encode 版面（位移從第 21 個 byte 起算；登入簽章總長約 600 bytes）：
+
+```
+0x000  0x20                      → SignatureData 起點
+0x020  keyId
+0x040  0x40                      → sig 相對 SignatureData 的位移（sig 起點 0x060）
+0x060  0xc0                      → authenticatorData 位移（起點 0x120）
+0x080  0x120                     → clientDataJSON 位移（起點 0x180）
+0x0a0  challengeIndex            例：0x17（23）
+0x0c0  typeIndex                 例：0x01
+0x0e0  r
+0x100  s
+0x120  authenticatorData 長度     例：0x25（37）
+0x140  authenticatorData（補齊 32 的倍數）
+0x180  clientDataJSON 長度        例：0x86（134）
+0x1a0  clientDataJSON（補齊 32 的倍數）
+```
+
+#### 5.3 KeyringValidator 的驗證規則
+
+1. `keyId` 必須是這個帳戶目前有效的金鑰（裝置金鑰 DAILY 或實體卡 MASTER 皆可）。
+2. `authenticatorData` 前 32 bytes 必須等於該金鑰登記時的 `rpIdHash`，也就是 `sha256(CAFECA 錢包的 RP ID)`，RP ID 為錢包網域的主機名稱。
+3. flags 必須有 UP 與 UV（使用者在場並通過指紋／PIN），不可有 AT。
+4. `clientDataJSON` 在 `typeIndex` 處必須是 `"type":"webauthn.get"`。
+5. `clientDataJSON` 在 `challengeIndex` 處必須是 `"challenge":"<base64url(hash)>"`，其中 base64url 不補 `=`，編碼的是 32-byte hash 的原始 bytes。
+6. `s ≤ n/2`。
+7. 以 `sha256(authenticatorData ‖ sha256(clientDataJSON))` 為訊息，用金鑰的 `(qx, qy)` 做 P-256 驗證。鏈上優先使用 EIP-7951 precompile（0x100），沒有時退回 Solidity 實作。
+
+驗證時綁定的是 `rpIdHash`，合約不檢查 `clientDataJSON` 裡的 `origin`。
+
+#### 5.4 其他簽章格式
+
+| 對象 | 格式 |
+| --- | --- |
+| UserOperation（KeyringValidator） | `UserOp.signature = abi.encode(SignatureData)`，**沒有** 20-byte 前綴。validator 由 `nonce` 的最高 160 bits 指定（`nonce = validator << 96 ‖ 序號`），挑戰值是 `userOpHash` |
+| 實體卡（MASTER）的 UserOp | 同上，另外 flags 不可有 BE（0x08，可同步的金鑰不能當卡片）。操作需要卡片確認時，`authenticatorData` 必須是 77 bytes：37 bytes 之後接卡片擴充 CBOR `{ "ctxd": bstr(32) }`（`A1 64 63747864 58 20` ‖ 32 bytes），flags 帶 ED（0x80）。`ctxd = sha256(abi.encode(TxSummary[]))` 是卡片螢幕顯示內容的雜湊，必須等於鏈上 `previewAssessment` 算出的值（所見即所簽，規格 §9.2） |
+| AI 子錢包／支出通道帳戶（ChannelValidator） | ERC-1271：`validator (20) ‖ r (32) ‖ s (32) ‖ v (1)`，由通道操作者以 secp256k1 直接對 `hash` 簽署（不加 EIP-191 前綴）；通道撤銷後失效 |
+| 平台備援金鑰（RecoveryValidator） | 不能產生一般簽章，`isValidSignature` 一律回傳無效 |
+
+#### 5.5 解析範例（viem）
+
+```ts
+import { decodeAbiParameters, slice, type Hex } from "viem";
+
+const SIGNATURE_DATA = [{
+  type: "tuple",
+  components: [
+    { name: "keyId", type: "bytes32" },
+    { name: "sig", type: "tuple", components: [
+      { name: "authenticatorData", type: "bytes" },
+      { name: "clientDataJSON", type: "string" },
+      { name: "challengeIndex", type: "uint256" },
+      { name: "typeIndex", type: "uint256" },
+      { name: "r", type: "bytes32" },
+      { name: "s", type: "bytes32" },
+    ] },
+  ],
+}] as const;
+
+export function decodeCafecaSignature(signature: Hex) {
+  const validator = slice(signature, 0, 20);
+  const [data] = decodeAbiParameters(SIGNATURE_DATA, slice(signature, 20));
+  return { validator, keyId: data.keyId, ...data.sig };
+}
+```
+
+錢包端的編碼實作見 [`app/src/lib/userop.ts`](app/src/lib/userop.ts)（`encode1271`、`encodeKeyringSignature`）與 [`app/src/lib/webauthn.ts`](app/src/lib/webauthn.ts)。合約端的驗證見 [`contracts/src/lib/WebAuthnLib.sol`](contracts/src/lib/WebAuthnLib.sol) 與 `KeyringValidator.isValidSignatureWithSender`。
+
+### 6. 網站資訊（選填）
 
 在 `https://<你的網域>/.well-known/cafeca-site.json` 放上以下內容，並加上 `Access-Control-Allow-Origin: *`：
 
@@ -179,7 +293,7 @@ SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 ex
 - 圖示只接受你網域上的檔案。
 - 沒有這個檔案也可以正常登入。
 
-### 6. 安全注意事項
+### 7. 安全注意事項
 
 - **一定要在後端驗證**：SDK 不驗證簽章，前端拿到的回應可以被竄改。
 - **nonce 必須綁定瀏覽器 session、只能使用一次，並在驗證前就作廢**，以防重送攻擊。
@@ -193,7 +307,7 @@ SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 ex
 - **TODO：合約層的 ERC-7739 防重放封裝尚未實作。** 目前「登入簽章無法挪用到其他用途」是靠錢包端限制來保證，上線前會補上合約層保護。
 - **登入後的 session 由你的網站自行管理。** CAFECA 不發 access token，也無法替使用者撤銷你網站的 session；使用者在 CAFECA 的「安全 → 以 CAFECA 登入的網站」只看得到本機紀錄。
 
-### 7. 簽章通道：登入後請使用者簽署或付款
+### 8. 簽章通道：登入後請使用者簽署或付款
 
 登入時加上 `channel: true`，使用者同意後，網站之後可以透過通道請使用者：
 
@@ -251,7 +365,7 @@ EIP-712 的數值請使用 `number` 或十進位字串，不要傳 `bigint`（�
 
 需要**不經使用者逐筆確認**的定期扣款或 AI 代付，請改用支出通道（規格 §6）：在鏈上預先設定額度，由代理人自行簽署。
 
-### 8. 範例網站
+### 9. 範例網站
 
 ```bash
 cd app
