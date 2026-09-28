@@ -21,7 +21,7 @@ import {
 import { CafecaTile } from "./cafeca-logo";
 import { PasskeyIcon } from "./icons";
 import { useWallet } from "./wallet-provider";
-import { Badge, Button, Notice, cx, errMsg, short } from "./ui";
+import { Badge, Button, Notice, Switch, cx, errMsg, short } from "./ui";
 
 type SiteMeta = { name?: string; icon?: string };
 
@@ -225,44 +225,37 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
 
       {!!request.claims?.length && (
         <div className="space-y-2">
-          <div className="text-xs font-medium text-ink-3">網站要求提供（可取消勾選）</div>
+          <div className="text-xs font-medium text-ink-3">網站要求提供（可關閉）</div>
           {request.claims.map((c) => (
-            <label key={c} className="flex items-center justify-between rounded-xl border border-line px-3 py-2 text-sm">
-              <span>
+            <div key={c} className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2.5 text-sm">
+              <span className="min-w-0">
                 {CLAIM_LABEL[c]}
                 <span className="ml-2 text-xs text-ink-3">
                   {c === "kyc_level" ? (chain.level >= 2 ? "L2 已實名" : chain.level === 1 ? "L1" : "未實名") : handle ? `@${handle}` : "尚未設定"}
                 </span>
               </span>
-              <input
-                type="checkbox"
-                className="size-4 accent-[var(--brand)]"
+              <Switch
                 checked={grant[c]}
-                onChange={(e) => setGrant((g) => ({ ...g, [c]: e.target.checked }))}
-                data-testid={`claim-${c}`}
+                onChange={(v) => setGrant((g) => ({ ...g, [c]: v }))}
+                label={`提供${CLAIM_LABEL[c]}`}
+                testId={`claim-${c}`}
               />
-            </label>
+            </div>
           ))}
           <p className="text-[11px] text-ink-3">實名等級由網站直接向鏈上查詢，不會提供姓名、生日或證號。</p>
         </div>
       )}
 
       {request.channel && (
-        <label className="flex items-start gap-3 rounded-xl border border-line px-3 py-2.5 text-sm">
-          <input
-            type="checkbox"
-            className="mt-0.5 size-4 accent-[var(--brand)]"
-            checked={allowChannel}
-            onChange={(e) => setAllowChannel(e.target.checked)}
-            data-testid="allow-channel"
-          />
-          <span>
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2.5 text-sm">
+          <span className="min-w-0">
             <span className="font-medium">開啟簽章通道</span>
-            <span className="block text-xs text-ink-3">
+            <span className="mt-0.5 block text-xs text-ink-3">
               允許這個網站之後請你簽署訊息或付款，有效到 {new Date((request.issuedAt + (request.channel.ttl ?? 0)) * 1000).toLocaleDateString("zh-TW")}。每一次都會在這裡顯示網站的說明與實際內容，由你確認後才會簽署；隨時可以在「安全」頁關閉。
             </span>
           </span>
-        </label>
+          <Switch checked={allowChannel} onChange={setAllowChannel} label="開啟簽章通道" testId="allow-channel" />
+        </div>
       )}
 
       {request.mode === "post" && (

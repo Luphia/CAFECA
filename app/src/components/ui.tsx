@@ -220,3 +220,41 @@ export function EyeToggle({ shown, onToggle, className }: { shown: boolean; onTo
     </button>
   );
 }
+
+/** 左右滑動的開關（取代原生 checkbox）；role="switch" 供讀屏與測試使用 */
+export function Switch({
+  checked,
+  onChange,
+  label,
+  disabled,
+  testId,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  disabled?: boolean;
+  testId?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      data-testid={testId}
+      onClick={() => onChange(!checked)}
+      className={cx(
+        "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50",
+        checked ? "btn-primary" : "bg-line",
+      )}
+    >
+      <span
+        className={cx(
+          "inline-block size-5 rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.3)] transition-transform duration-200 ease-out",
+          checked ? "translate-x-6" : "translate-x-1",
+        )}
+      />
+    </button>
+  );
+}
