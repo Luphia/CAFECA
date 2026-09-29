@@ -8,6 +8,7 @@ import { memberValidatorAbi } from "@/lib/contracts/abis";
 import { publicClient } from "./chain";
 import { attestIdentity, changeIdentityStatus, identityState } from "./identity";
 import { legalNameOf } from "./kyc-credential";
+import { MoeacaError, verifyMoeacaSignature, type MoeacaCert } from "./moeaca";
 import { HttpError } from "./session";
 import { read, update, type EntityRecord, type GcisCompany } from "./store";
 
@@ -149,20 +150,104 @@ function claimsRootOf(c: GcisCompany): `0x${string}` {
   return keccak256(toHex(`ubn:${c.ubn}|name:${c.name}|responsible:${c.responsible}|change:${c.changeDate}`));
 }
 
-/** 申請驗證 */
-export async function applyEntity(me: Address, entity: Address, ubn: string, letter?: File | null) {
-  if (!hasEntity()) throw new HttpError(503, "法人帳戶合約尚未部署");
-  if (!validUbn(ubn)) throw new HttpError(400, "統一編號格式或檢查碼錯誤");
+/** 申請前的共同檢查：管理者、已登記、沒有審核中的申請、統編沒有綁定其他法人帳戶 */
+async function precheck(me: Address, entity: Address, ubn?: string) {
   if ((await roleOf(me, entity)) !== Role.ADMIN) throw new HttpError(403, "只有法人帳戶的管理者可以申請驗證");
   const s0 = await read();
   const rec0 = s0.entities?.[keyOf(entity)];
   if (!rec0) throw new HttpError(404, "請先登記這個法人帳戶");
   if (rec0.application && ["pending", "review"].includes(rec0.application.status)) throw new HttpError(409, "已經送出申請，審核中");
   if (rec0.verified && rec0.monitor?.status !== "suspended") throw new HttpError(409, "這個法人帳戶已經通過驗證");
+  if (ubn === undefined) return;
   if (rec0.verified && rec0.verified.ubn !== ubn) throw new HttpError(409, `這個法人帳戶已綁定統一編號 ${rec0.verified.ubn}，不能改綁`);
   const bound = Object.values(s0.entities ?? {}).find((r) => r.verified?.ubn === ubn && keyOf(r.entity) !== keyOf(entity));
   if (bound) throw new HttpError(409, "這個統一編號已經綁定其他法人帳戶");
+}
 
+/**
+ * 工商憑證綁定（P1.5）
+ * 1. 伺服器產生一次性挑戰：法人帳戶地址、鏈、隨機碼、到期時間
+ * 2. 使用者以 HiPKI 跨平台網頁元件，用工商憑證 IC 卡簽署（PKCS#7）
+ * 3. 驗證簽章、憑證鏈（MOEACA → GRCA）、效期、CRL，取出憑證上的統一編號
+ * 4. 商工登記仍須為「核准設立」；統編沒有綁定其他法人帳戶 → 直接通過（不需比對代表人姓名，公司憑證本身就是公司的授權）
+ */
+export async function moeacaChallenge(me: Address, entity: Address) {
+  if (!hasEntity()) throw new HttpError(503, "法人帳戶合約尚未部署");
+  await precheck(me, entity);
+  const id = randomBytes(12).toString("hex");
+  const exp = Date.now() + 10 * 60_000;
+  const tbs = [
+    "CAFECA 法人帳戶綁定",
+    `法人帳戶：${getAddress(entity)}`,
+    `鏈：Boltchain ${DEPLOYMENT.chainId}`,
+    `申請人：${getAddress(me)}`,
+    `隨機碼：${id}`,
+    `有效期限：${new Date(exp).toISOString()}`,
+    "以本公司工商憑證簽署，同意將本公司統一編號綁定上述 CAFECA 法人帳戶。",
+  ].join("\n");
+  await update((s) => {
+    s.moeacaChallenges ??= {};
+    for (const [k, v] of Object.entries(s.moeacaChallenges)) if (v.exp < Date.now() - 3600_000) delete s.moeacaChallenges[k];
+    s.moeacaChallenges[id] = { entity: getAddress(entity), account: me, tbs, exp, used: false };
+  });
+  return { id, tbs, exp };
+}
+
+export async function applyEntityByCert(me: Address, p: { id: string; signature: string; certb64?: string }) {
+  const ch = await update((s) => {
+    const c = s.moeacaChallenges?.[p.id];
+    if (!c || c.used || c.exp < Date.now() || c.account.toLowerCase() !== me.toLowerCase()) return null;
+    c.used = true;
+    return c;
+  });
+  if (!ch) throw new HttpError(400, "綁定請求已過期或已使用，請重新開始");
+  const entity = ch.entity as Address;
+  let cert: MoeacaCert;
+  try {
+    cert = await verifyMoeacaSignature({ signature: p.signature, certb64: p.certb64, expected: new TextEncoder().encode(ch.tbs) });
+  } catch (e) {
+    throw new HttpError(400, e instanceof MoeacaError ? e.message : `工商憑證驗證失敗：${(e as Error).message}`);
+  }
+  await precheck(me, entity, cert.ubn);
+  const gcis = await gcisLookup(cert.ubn).catch((e: Error) => {
+    throw new HttpError(502, e.message);
+  });
+  const checks: Record<string, { ok: boolean; detail: string }> = {
+    moeaca: { ok: true, detail: `工商憑證簽章有效（${cert.cardRank === "primary" ? "正卡" : cert.cardRank === "secondary" ? "附卡" : "卡別未知"}，序號 ${cert.serial}，有效至 ${cert.notAfter.slice(0, 10)}）` },
+    crl: { ok: true, detail: `憑證未被廢止（CRL ${cert.crl?.url ?? ""}）` },
+    registry: gcis ? { ok: true, detail: `商工登記：${gcis.name}` } : { ok: false, detail: "商工登記查無此統一編號（目前只支援公司登記）" },
+  };
+  if (gcis) checks.status = gcis.status === ACTIVE_STATUS ? { ok: true, detail: "公司狀況：核准設立" } : { ok: false, detail: `公司狀況為「${gcis.status || "未知"}」，只接受核准設立` };
+  if (cert.testPki) checks.testPki = { ok: true, detail: "測試用 PKI（MOEACA_TEST_ANCHORS）— 正式環境不得使用" };
+  const ok = Object.values(checks).every((c) => c.ok);
+  const id = randomBytes(8).toString("hex");
+  const dir = entityDir(entity, id);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "moeaca.json"), JSON.stringify({ challenge: ch.tbs, signature: p.signature, certb64: p.certb64 ?? null, cert }, null, 2));
+  const application: NonNullable<EntityRecord["application"]> = {
+    id,
+    ubn: cert.ubn,
+    applicant: me,
+    applicantName: await legalNameOf(me),
+    at: Date.now(),
+    path: "moeaca",
+    status: ok ? "approved" : "rejected",
+    gcis,
+    checks,
+    moeaca: { ubn: cert.ubn, companyName: cert.companyName, cardRank: cert.cardRank, serial: cert.serial, notAfter: cert.notAfter, fingerprint256: cert.fingerprint256, testPki: cert.testPki },
+  };
+  await update((s) => {
+    s.entities![keyOf(entity)].application = application;
+  });
+  if (ok) await finalizeEntity(entity);
+  return publicEntity((await read()).entities![keyOf(entity)]);
+}
+
+/** 申請驗證 */
+export async function applyEntity(me: Address, entity: Address, ubn: string, letter?: File | null) {
+  if (!hasEntity()) throw new HttpError(503, "法人帳戶合約尚未部署");
+  if (!validUbn(ubn)) throw new HttpError(400, "統一編號格式或檢查碼錯誤");
+  await precheck(me, entity, ubn);
   const applicantName = await legalNameOf(me);
   if (!applicantName) throw new HttpError(403, "申請人需要有效的 L2 實名驗證（證件姓名）");
 
@@ -245,7 +330,7 @@ export async function finalizeEntity(entity: Address, reviewer?: string) {
       x.application!.result = { txHash: r.v2Tx };
       x.verified = { ubn: a.ubn, name: a.gcis!.name, responsible: a.gcis!.responsible, changeDate: a.gcis!.changeDate, approvedAt: Date.now(), txHash: r.v2Tx };
       x.displayName ??= a.gcis!.name;
-      x.monitor = { lastCheck: Date.now(), status: "ok", detail: reviewer ? `人工核准（${reviewer}）` : "代表人本人申請，自動通過" };
+      x.monitor = { lastCheck: Date.now(), status: "ok", detail: reviewer ? `人工核准（${reviewer}）` : a.path === "moeaca" ? "工商憑證綁定，自動通過" : "代表人本人申請，自動通過" };
     });
   } catch (e) {
     await update((s) => {

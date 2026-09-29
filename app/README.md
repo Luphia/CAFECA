@@ -156,6 +156,8 @@ npm run build
 
 **鏈上事件索引（規格 §16.6 P0-d）**：伺服器持續同步 TWDC 轉帳、金鑰增減、實名證明狀態、恢復、額度調整與法人帳戶事件（`src/server/indexer.ts`，存在 `data/index/`，可隨時刪除重建）。錢包紀錄、聊天中的轉帳、「以此裝置的 Passkey 登入」反查身分與管理後台都改讀索引，瀏覽器不再從部署區塊掃描整條鏈（Boltchain RPC 的 `eth_getLogs` 每次最多 10,000 個區塊）。每次同步把所有合約合併成一個查詢、每段 ≤ 10,000 區塊，並重掃最後 5 個區塊去重；部署位址改變時自動重建。API：`GET /api/index/transfers?address=&limit=&before=`、`GET /api/index/key-accounts?keyId=`、`GET /api/index/status`（`deploy:server` 會檢查同步落後）。
 
+**工商憑證綁定（P1.5 PoC）**：`/company` 的「以工商憑證綁定」透過使用者電腦上的 HiPKI 跨平台網頁元件（`http://localhost:61161`，`src/lib/hipki.ts`）以 IC 卡簽署 PKCS#7；伺服器 `src/server/moeaca.ts` 驗證簽章、憑證鏈（內建 GRCA／GRCA G3 根與 MOEACA 第二、三代中繼，`src/server/moeaca-anchors.ts`）、效期、金鑰用途、憑證政策 `2.16.886.101.0.3.3` 與分區 CRL，取出統一編號與正卡／附卡。憑證欄位已以 MOEACA 公開下載的真實憑證核對；元件的 postMessage 參數與錯誤碼依公開範例實作，**尚待以實體卡片與讀卡機確認**。可用 `npm run moeaca:inspect -- <憑證.cer>` 檢查一張實體卡的憑證，或 `--sig <PKCS#7> --tbs <內容>` 檢查元件產生的簽章。`MOEACA_TEST_ANCHORS` 只供自動化測試使用測試 PKI，正式環境不得設定。
+
 **伺服器需求**
 
 - 系統要有 `ffmpeg`（或以 `FFMPEG_PATH` 指定），用來解碼臉部影片與音訊。

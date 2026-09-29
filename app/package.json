@@ -13,17 +13,20 @@
     "typecheck": "tsc --noEmit",
     "sync-abis": "node scripts/sync-abis.mjs",
     "fetch-models": "node scripts/fetch-models.mjs",
-    "postinstall": "node scripts/fetch-models.mjs"
+    "postinstall": "node scripts/fetch-models.mjs",
+    "moeaca:inspect": "tsx --conditions react-server scripts/moeaca-inspect.mts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",
     "@mediapipe/tasks-vision": "^1.0.1",
     "@noble/curves": "^1.9.1",
     "@noble/hashes": "^1.8.0",
+    "asn1js": "^3.0.10",
     "jose": "^6.2.12",
     "jsqr": "^1.4.0",
     "next": "16.3.6",
     "onnxruntime-node": "^1.30.0",
+    "pkijs": "^3.4.1",
     "qrcode": "^1.5.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",

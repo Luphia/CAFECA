@@ -16,6 +16,7 @@ type Rec = {
     at: number;
     path: string;
     status: string;
+    moeaca?: { ubn: string; companyName: string; cardRank: string; serial: string; notAfter: string; testPki: boolean };
     gcis: { name: string; status: string; responsible: string; changeDate: string; setupDate: string; location: string; capital: number } | null;
     checks: Record<string, { ok: boolean; detail: string }>;
     letter?: string;
@@ -118,6 +119,7 @@ export default function EntityReviewPage() {
               <table className="w-full text-left text-sm">
                 <tbody className="[&_td]:py-1 [&_th]:w-32 [&_th]:py-1 [&_th]:font-normal [&_th]:text-ink-3">
                   <tr><th>統一編號</th><td className="font-mono">{a.ubn}</td></tr>
+                  <tr><th>驗證方式</th><td>{a.path === "moeaca" ? "工商憑證簽署" : a.path === "agent" ? "代理人（授權書）" : "代表人本人"}</td></tr>
                   <tr><th>公司狀況</th><td>{a.gcis?.status ?? "—"}</td></tr>
                   <tr><th>登記代表人</th><td>{a.gcis?.responsible ?? "—"}</td></tr>
                   <tr><th>申請人證件姓名</th><td>{a.applicantName ?? "—"}{sel.applicantHandle ? `（@${sel.applicantHandle}）` : ""} <span className="font-mono text-xs text-ink-3">{short(a.applicant, 6)}</span></td></tr>

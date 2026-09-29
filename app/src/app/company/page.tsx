@@ -9,6 +9,7 @@ import { runOp } from "@/lib/actions";
 import { ROLE, ROLE_LABEL, createEntityCall, entityLimits, predictEntity, runEntityOp, setMemberCall } from "@/lib/entity";
 import { execCall } from "@/lib/userop";
 import { encodeFunctionData } from "viem";
+import { HipkiError, hipkiCards, hipkiSign, type HipkiCard } from "@/lib/hipki";
 import { AddressInput } from "@/components/address-input";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
@@ -201,6 +202,26 @@ function EntityCard({ e, open, onToggle, onChanged }: { e: Entity; open: boolean
     setAmount("");
   });
 
+  // 工商憑證綁定（P1.5）：桌機上的 HiPKI 跨平台網頁元件＋讀卡機
+  const [cards, setCards] = useState<HipkiCard[] | null | undefined>(undefined);
+  const [pin, setPin] = useState("");
+  const [tbs, setTbs] = useState<string | null>(null);
+  const detect = async () => setCards(await hipkiCards());
+  const bindByCert = wrap("cert", async () => {
+    const ch = await api<{ id: string; tbs: string }>("/api/entity/moeaca", { entity: e.entity });
+    setTbs(ch.tbs);
+    let sig;
+    try {
+      sig = await hipkiSign({ tbs: ch.tbs, pin });
+    } catch (err) {
+      throw new Error(err instanceof HipkiError ? err.message : errMsg(err));
+    }
+    const r = await api<{ application?: Application }>("/api/entity/moeaca", { id: ch.id, signature: sig.signature, certb64: sig.certb64 });
+    setPin("");
+    const st = r.application?.status;
+    toast(st === "approved" ? "工商憑證綁定完成，已簽發法人證明" : `未通過：${r.application?.reasons[0] ?? ""}`, st === "approved" ? "ok" : "danger");
+  });
+
   const canApply = admin && (!e.verified || e.monitor?.status === "suspended") && !["review", "pending"].includes(e.application?.status ?? "");
 
   return (
@@ -238,6 +259,27 @@ function EntityCard({ e, open, onToggle, onChanged }: { e: Entity; open: boolean
                 <input type="file" accept="application/pdf,image/png,image/jpeg" className="mt-1 block text-xs" onChange={(ev) => setLetter(ev.target.files?.[0] ?? null)} data-testid="entity-letter" />
               </label>
               <Button className="w-full" onClick={apply} busy={busy === "apply"} disabled={ubn.length !== 8} testId="entity-apply-btn">送出驗證</Button>
+              <div className="mt-3 rounded-xl border border-line p-3" data-testid="entity-moeaca">
+                <div className="text-sm font-medium">或以工商憑證綁定（桌機＋讀卡機）</div>
+                <p className="mt-1 text-[11px] text-ink-3">用公司的工商憑證 IC 卡簽署綁定請求：統一編號取自憑證，不需比對代表人姓名、不需授權書。需要安裝 HiPKI 跨平台網頁元件（<a className="underline" href="https://moeaca.nat.gov.tw/download/download_4.html" target="_blank" rel="noreferrer">工商憑證管理中心下載</a>）。</p>
+                {cards === undefined ? (
+                  <Button size="sm" variant="secondary" className="mt-2" onClick={detect} testId="moeaca-detect">偵測讀卡機</Button>
+                ) : cards === null ? (
+                  <p className="mt-2 text-xs text-danger" data-testid="moeaca-status">找不到 HiPKI 元件（http://localhost:61161）。請確認已安裝並啟動，或改用上方統編驗證。 <button className="underline" onClick={detect}>重試</button></p>
+                ) : (
+                  <div className="mt-2 space-y-2">
+                    <p className="text-xs text-ink-2" data-testid="moeaca-status">
+                      {cards.length ? `已偵測到卡片：${cards.map((c) => c.subject ?? c.cardSN ?? c.slot).join("、")}` : "元件已啟動，但沒有偵測到卡片，請插入工商憑證 IC 卡"}
+                    </p>
+                    <div className="flex gap-2">
+                      <input className={inputCls} type="password" value={pin} onChange={(ev) => setPin(ev.target.value)} placeholder="工商憑證 PIN 碼" autoComplete="off" data-testid="moeaca-pin" />
+                      <Button onClick={bindByCert} busy={busy === "cert"} disabled={pin.length < 6} testId="moeaca-sign">以憑證簽署</Button>
+                    </div>
+                    {tbs && <pre className="whitespace-pre-wrap rounded-lg bg-surface-2 p-2 text-[11px] text-ink-2" data-testid="moeaca-tbs">{tbs}</pre>}
+                    <p className="text-[11px] text-ink-3">PIN 碼只交給你電腦上的元件，不會送到 CAFECA。</p>
+                  </div>
+                )}
+              </div>
               <p className="text-[11px] text-ink-3">以經濟部商工登記公示資料查詢：公司狀況須為「核准設立」。你的證件姓名與登記代表人相同時自動通過；CAFECA 每天重新查詢，代表人或公司狀況改變時會暫停或撤銷。</p>
             </section>
           )}

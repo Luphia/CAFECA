@@ -102,6 +102,7 @@ if [ -z "$(env_get KYC_PAIRWISE_KEY)" ]; then
 else
   ok "KYC_PAIRWISE_KEY 已設定"
 fi
+[ -n "$(env_get MOEACA_TEST_ANCHORS)" ] && warn "MOEACA_TEST_ANCHORS 只限自動化測試（會信任測試 PKI 的工商憑證），正式環境請移除"
 for k in KYC_PROTOTYPE_AUTO_APPROVE NEXT_PUBLIC_KYC_SIMULATE; do
   [ "$(env_get $k)" = "1" ] && warn "$k=1 只限開發，正式環境請移除"
 done

@@ -64,6 +64,8 @@ export type Store = {
   /** 身分狀態同步進度（處理到哪個區塊的 RecoveryExecuted） */
   /** 法人帳戶（規格 §16.4）：法人地址（小寫）→ 驗證紀錄；一個統編只能綁一個法人帳戶 */
   entities?: Record<string, EntityRecord>;
+  /** 工商憑證綁定挑戰（一次性，10 分鐘） */
+  moeacaChallenges?: Record<string, { entity: string; account: string; tbs: string; exp: number; used: boolean }>;
   /** 聊天附件（檔案內容在傳送端就以一次性金鑰加密，伺服器只保存密文；金鑰在端對端加密的訊息裡） */
   chatBlobs?: Record<string, { from: string; to: string; size: number; createdAt: number }>;
   identitySync?: { lastBlock: number; log: { account: string; block: number; action: "reattest" | "suspend" | "skip"; tx?: string; at: number }[] };
@@ -94,7 +96,9 @@ export type EntityRecord = {
     applicant: string;
     applicantName: string | null;
     at: number;
-    path: "representative" | "agent";
+    path: "representative" | "agent" | "moeaca";
+    /** 工商憑證綁定（P1.5）：驗證過的憑證摘要 */
+    moeaca?: { ubn: string; companyName: string; cardRank: string; serial: string; notAfter: string; fingerprint256: string; testPki: boolean };
     status: "pending" | "review" | "approved" | "rejected";
     gcis: GcisCompany | null;
     checks: Record<string, { ok: boolean; detail: string }>;
