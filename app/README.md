@@ -154,6 +154,8 @@ npm run build
 
 **法人帳戶（規格 §16.4）**：`MemberValidator`（成員代簽、額度只能由管理者調整）＋`EntityAccountFactory`。已部署的環境執行 `npm run deploy -- --entity` 增量部署，不影響既有身分（`deploy:server` 會自動執行）。商工登記以 `data.gcis.nat.gov.tw` 查詢（測試可用 `GCIS_COMPANY_URL` 指向模擬服務），每日監控由排程呼叫 `POST /api/entity/sync`；`/api/entity/sync?force=1` 需管理後台登入，立即重查全部法人。
 
+**鏈上事件索引（規格 §16.6 P0-d）**：伺服器持續同步 TWDC 轉帳、金鑰增減、實名證明狀態、恢復、額度調整與法人帳戶事件（`src/server/indexer.ts`，存在 `data/index/`，可隨時刪除重建）。錢包紀錄、聊天中的轉帳、「以此裝置的 Passkey 登入」反查身分與管理後台都改讀索引，瀏覽器不再從部署區塊掃描整條鏈（Boltchain RPC 的 `eth_getLogs` 每次最多 10,000 個區塊）。每次同步把所有合約合併成一個查詢、每段 ≤ 10,000 區塊，並重掃最後 5 個區塊去重；部署位址改變時自動重建。API：`GET /api/index/transfers?address=&limit=&before=`、`GET /api/index/key-accounts?keyId=`、`GET /api/index/status`（`deploy:server` 會檢查同步落後）。
+
 **伺服器需求**
 
 - 系統要有 `ffmpeg`（或以 `FFMPEG_PATH` 指定），用來解碼臉部影片與音訊。

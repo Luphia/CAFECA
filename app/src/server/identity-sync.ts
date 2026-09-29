@@ -1,11 +1,11 @@
 import "server-only";
-import { getAddress, parseAbiItem, type Address } from "viem";
+import { getAddress, type Address } from "viem";
 import { DEPLOYMENT, IdentityReason, IdentityStatus } from "@/lib/config";
 import { publicClient } from "./chain";
+import { indexedHead, queryEvents, syncIndex } from "./indexer";
 import { attestIdentity, changeIdentityStatus, claimsRootOf, identityState } from "./identity";
 import { read, update } from "./store";
 
-const RECOVERY_EXECUTED = parseAbiItem("event RecoveryExecuted(address indexed account, bytes32 newKeyId)");
 /** 恢復請求時重新驗證的案件，在這段時間內執行恢復才算數（時間鎖 48 小時／有卡 7 天，再留緩衝） */
 const REVERIFY_WINDOW_MS = 14 * 24 * 3600 * 1000;
 
@@ -35,29 +35,27 @@ async function run(): Promise<SyncResult> {
   if (!DEPLOYMENT.identityRegistry) return { from: 0, to: 0, processed: [] };
   const s = await read();
   const from = (s.identitySync?.lastBlock ?? DEPLOYMENT.startBlock - 1) + 1;
-  const head = Number(await publicClient.getBlockNumber());
+  // 伺服器事件索引（P0-d）：只處理索引已同步到的區塊
+  const head = await syncIndex({ force: true }).catch(() => indexedHead() ?? from - 1);
   const processed: SyncResult["processed"] = [];
   let done = from - 1;
-  for (let lo = from; lo <= head; lo += 10_000) {
-    const hi = Math.min(head, lo + 9_999);
-    const logs = await publicClient.getLogs({ address: DEPLOYMENT.recovery, event: RECOVERY_EXECUTED, fromBlock: BigInt(lo), toBlock: BigInt(hi) });
-    for (const l of logs) {
-      const account = getAddress(l.args.account!);
-      const block = Number(l.blockNumber);
-      const r = await handleRecovery(account, block);
-      processed.push({ account, ...r });
-      await update((st) => {
-        st.identitySync = {
-          lastBlock: block - 1, // 同一區塊內的其他事件下次還會被掃到；已處理的會因狀態而跳過
-          log: [...(st.identitySync?.log ?? []), { account, block, ...r, at: Date.now() }].slice(-200),
-        };
-      });
-    }
-    done = hi;
+  const logs = (await queryEvents({ names: ["RecoveryExecuted"], contract: DEPLOYMENT.recovery, afterBlock: from - 1, limit: 10_000 })).filter((l) => l.b <= head).sort((a, b) => a.b - b.b || a.li - b.li);
+  for (const l of logs) {
+    const account = getAddress(String(l.a.account));
+    const block = l.b;
+    const r = await handleRecovery(account, block);
+    processed.push({ account, ...r });
     await update((st) => {
-      st.identitySync = { lastBlock: done, log: st.identitySync?.log ?? [] };
+      st.identitySync = {
+        lastBlock: block - 1, // 同一區塊內的其他事件下次還會被掃到；已處理的會因狀態而跳過
+        log: [...(st.identitySync?.log ?? []), { account, block, ...r, at: Date.now() }].slice(-200),
+      };
     });
   }
+  done = Math.max(done, head);
+  await update((st) => {
+    st.identitySync = { lastBlock: done, log: st.identitySync?.log ?? [] };
+  });
   return { from, to: done, processed };
 }
 

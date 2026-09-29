@@ -187,4 +187,10 @@ else
     });' "$origin"
 fi
 curl -fsS -X POST "http://127.0.0.1:$PORT/api/identity/sync" >/dev/null 2>&1 && ok "/api/identity/sync 可呼叫" || warn "/api/identity/sync 呼叫失敗"
+idx="$(curl -fsS "http://127.0.0.1:$PORT/api/index/status" 2>/dev/null || true)"
+if [ -n "$idx" ]; then
+  echo "$idx" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const lag=j.head==null?null:j.head-j.lastBlock;console.log(`  ${lag!==null&&lag<50?"\x1b[32m✓\x1b[0m":"\x1b[33m!\x1b[0m"} 事件索引：同步到 #${j.lastBlock}／鏈高 #${j.head}，${j.events} 筆事件${j.lastError?"，錯誤："+j.lastError:""}`)})'
+else
+  warn "/api/index/status 沒有回應"
+fi
 printf '\n完成。對外檢查：curl -s %s/.well-known/cafeca-configuration\n' "$origin"

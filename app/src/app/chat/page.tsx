@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { encodeFunctionData, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from "viem";
+import { encodeFunctionData, getAddress, isAddress, parseUnits, type Address, type Hex } from "viem";
 import { DEPLOYMENT, TWDC_DECIMALS } from "@/lib/config";
 import { channelValidatorAbi, deviceDirectoryAbi, keyringValidatorAbi } from "@/lib/contracts/abis";
 import { api, passkeySigner, publicClient, saveWallet, submitOp } from "@/lib/client";
@@ -14,7 +14,6 @@ import { useWallet } from "@/components/wallet-provider";
 import { Badge, Button, cx, inputCls, Notice, Panel, Spinner, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
 import { AddressInput } from "@/components/address-input";
 import { HandlePanel } from "@/components/handle-panel";
-import { logsInRange, recentLogs } from "@/lib/logs";
 import { MAX_FILE, encryptFile, fetchFile, fmtSize, imageThumb, type FileRef } from "@/lib/chat-file";
 
 type RawMsg = {
@@ -33,7 +32,6 @@ type Payload = { text?: string; amount?: string; memo?: string; txHash?: Hex; re
 
 const SYSTEM = "system";
 
-const TRANSFER_EVENT = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");type TransferLog = { transactionHash: Hex | null; logIndex: number | null; blockNumber: bigint | null; args: { from?: Address; to?: Address; value?: bigint } };
 
 /** 鏈上的 TWDC 轉帳（不論是在聊天、錢包或其他地方送出，都顯示在與對方的對話中） */
 type ChainTx = { hash: Hex; from: string; to: string; value: bigint; ts: number };
@@ -62,7 +60,6 @@ function ChatBody() {
   const [extraHandles, setExtraHandles] = useState<Record<string, string | null>>({});
   const decrypted = useRef<Set<string>>(new Set());
   const identityCache = useRef<Map<string, boolean>>(new Map());
-  const blockTs = useRef<Map<bigint, number>>(new Map());
 
   const checkDevice = useCallback(async () => {
     const local = await getDeviceKey();
@@ -96,29 +93,11 @@ function ChatBody() {
     if (Object.keys(updates).length) setPlain((p) => ({ ...p, ...updates }));
   }, []);
 
-  const scannedTo = useRef<bigint | null>(null);
-  const txLogs = useRef<TransferLog[]>([]);
-
-  /** 讀取與我相關的鏈上 TWDC 轉帳，只保留對方也是 CAFECA 身分的紀錄 */
+  /** 讀取與我相關的鏈上 TWDC 轉帳（伺服器索引），只保留對方也是 CAFECA 身分的紀錄 */
   const loadChainTx = useCallback(async () => {
-    const ev = TRANSFER_EVENT;
-    const self = getAddress(me);
-    // RPC 每次最多查 10,000 個區塊：第一次由新到舊掃到 100 筆為止，之後只查新的區塊
-    const window = async (lo: bigint, hi: bigint) => {
-      const [out, inc] = await Promise.all([
-        publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { from: self }, fromBlock: lo, toBlock: hi }),
-        publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { to: self }, fromBlock: lo, toBlock: hi }),
-      ]);
-      return [...out, ...inc];
-    };
-    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
-    const scanned = scannedTo.current;
-    const fresh = scanned === null ? await recentLogs(window, BigInt(DEPLOYMENT.startBlock), head, 100) : await logsInRange(window, scanned + 1n, head);
-    scannedTo.current = head;
-    const seen = new Set(txLogs.current.map((l) => `${l.transactionHash}:${l.logIndex}`));
-    txLogs.current = [...txLogs.current, ...fresh.filter((l) => !seen.has(`${l.transactionHash}:${l.logIndex}`))];
-    const logs = [...txLogs.current].sort((a, b) => Number(b.blockNumber! - a.blockNumber!)).slice(0, 100);
-    const others = [...new Set(logs.map((l) => (l.args.from!.toLowerCase() === me ? l.args.to! : l.args.from!).toLowerCase()))];
+    const { transfers } = await api<{ transfers: { hash: Hex; from: Address; to: Address; value: string; ts: number }[] }>(`/api/index/transfers?address=${me}&limit=100`);
+    const logs = transfers.map((t) => ({ hash: t.hash, from: t.from.toLowerCase(), to: t.to.toLowerCase(), value: BigInt(t.value), ts: t.ts }));
+    const others = [...new Set(logs.map((l) => (l.from === me ? l.to : l.from)))];
     await Promise.all(
       others
         .filter((o) => !identityCache.current.has(o))
@@ -129,18 +108,11 @@ function ChatBody() {
           identityCache.current.set(o, !!st?.[2]);
         }),
     );
-    const blocks = [...new Set(logs.map((l) => l.blockNumber!))].filter((b) => !blockTs.current.has(b));
-    await Promise.all(
-      blocks.map(async (b) => {
-        const blk = await publicClient.getBlock({ blockNumber: b }).catch(() => null);
-        if (blk) blockTs.current.set(b, Number(blk.timestamp) * 1000);
-      }),
-    );
     const txs: ChainTx[] = [];
     for (const l of logs) {
-      const other = (l.args.from!.toLowerCase() === me ? l.args.to! : l.args.from!).toLowerCase();
+      const other = l.from === me ? l.to : l.from;
       if (!identityCache.current.get(other) || other === me) continue;
-      txs.push({ hash: l.transactionHash!, from: l.args.from!.toLowerCase(), to: l.args.to!.toLowerCase(), value: l.args.value!, ts: blockTs.current.get(l.blockNumber!) ?? 0 });
+      txs.push(l);
     }
     setChainTx(txs);
     const missing = [...new Set(txs.map((t) => (t.from === me ? t.to : t.from)))].filter((o) => !(o in extraHandlesRef.current));

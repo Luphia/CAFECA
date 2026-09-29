@@ -233,18 +233,22 @@ export async function loginWithDevicePasskey(): Promise<{ address: Address; pass
   return null;
 }
 
-/** 由鏈上 KeyAdded 事件找出曾加入這把金鑰的帳戶（呼叫端仍須以 getKey 確認目前有效） */
+/**
+ * 找出曾加入這把金鑰的帳戶（呼叫端仍須以 getKey 確認目前有效）。
+ * 先查伺服器索引；索引無法使用時才由瀏覽器分段掃描鏈上 KeyAdded 事件。
+ */
 export async function accountsOfKey(keyId: Hex): Promise<Address[]> {
+  try {
+    return (await api<{ accounts: Address[] }>(`/api/index/key-accounts?keyId=${keyId}`)).accounts;
+  } catch (e) {
+    console.warn("索引查詢失敗，改為直接查鏈", e);
+  }
   const ev = parseAbiItem("event KeyAdded(address indexed account, bytes32 indexed keyId, uint8 keyClass)");
-  // RPC 每次最多查 10,000 個區塊：從部署區塊起分段掃描
   const head = await publicClient.getBlockNumber({ cacheTime: 0 });
   const logs = await logsInRange(
     (lo, hi) => publicClient.getLogs({ address: DEPLOYMENT.keyring, event: ev, args: { keyId }, fromBlock: lo, toBlock: hi }),
     BigInt(DEPLOYMENT.startBlock),
     head,
-  ).catch((e) => {
-    console.warn("KeyAdded 查詢失敗", e);
-    return [];
-  });
+  ).catch(() => []);
   return [...new Set(logs.map((l) => l.args.account!))];
 }
