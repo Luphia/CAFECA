@@ -76,7 +76,7 @@ abstract contract Base is Test {
         address recoveryAddr = vm.computeCreateAddress(address(this), n + 1);
         address cvAddr = vm.computeCreateAddress(address(this), n + 2);
         address cmAddr = vm.computeCreateAddress(address(this), n + 3);
-        keyring = new KeyringValidator(recoveryAddr, cmAddr, cvAddr, address(dd), address(att));
+        keyring = new KeyringValidator(recoveryAddr, cmAddr, cvAddr, address(dd), address(att), gov);
         recovery = new RecoveryValidator(address(keyring), address(att));
         cv = new ChannelValidator();
         cm = new ChannelManager(address(impl), address(cv));

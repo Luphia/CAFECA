@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { encodeAbiParameters, encodeFunctionData, hexToBytes, keccak256, parseUnits, type Hex } from "viem";
-import { Action, DEPLOYMENT, KeyClass, TWDC_DECIMALS } from "@/lib/config";
+import { encodeFunctionData, hexToBytes, type Hex } from "viem";
+import { Action, DEPLOYMENT, KeyClass } from "@/lib/config";
 import { keyringValidatorAbi, recoveryValidatorAbi } from "@/lib/contracts/abis";
 import { publicClient, saveWallet } from "@/lib/client";
-import { loadSchedules, removeSchedule, runOp, saveSchedule, scheduledReadyAt, type LocalSchedule } from "@/lib/actions";
+import { loadSchedules, removeSchedule, runOp, scheduledReadyAt, type LocalSchedule } from "@/lib/actions";
 import { getCard } from "@/lib/card-sim";
 import { execCall } from "@/lib/userop";
 import { registerPasskey } from "@/lib/webauthn";
@@ -19,7 +19,7 @@ import { PasskeyIcon, ScanIcon } from "@/components/icons";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
 import { useWallet } from "@/components/wallet-provider";
-import { Badge, Button, Field, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
+import { Badge, Button, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
 
 type KeyRow = { keyId: Hex; keyClass: number; addedAt: number; label: string };
 
@@ -39,7 +39,6 @@ function SecurityBody() {
   const w = wallet!;
   const [keys, setKeys] = useState<KeyRow[]>([]);
   const [schedules, setSchedules] = useState<(LocalSchedule & { live: number })[]>([]);
-  const [limits, setLimits] = useState({ perTx: "", daily: "" });
   const [current, setCurrent] = useState<{ perTx: bigint; daily: bigint } | null>(null);
   const [recovery, setRecovery] = useState<{ readyAt: number; escalated: boolean } | null>(null);
   const [pairText, setPairText] = useState("");
@@ -96,13 +95,6 @@ function SecurityBody() {
     }
   };
 
-  const schedule = async (action: number, payload: Hex, labelText: string) => {
-    const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "schedule", args: [action, payload] }));
-    const res = await runOp(w, call, confirmOnCard);
-    const hash = keccak256(encodeAbiParameters([{ type: "uint8" }, { type: "bytes" }], [action, payload]));
-    saveSchedule({ hash, action, payload, label: labelText, readyAt: await scheduledReadyAt(w.address, hash), account: w.address });
-    toast(<span>已排程，時間鎖到期後可執行 <TxLink hash={res.txHash} /></span>, "ok");
-  };
 
   /** 在這台瀏覽器再建立一把 passkey（例如另一個瀏覽器設定檔、或不同步的安全金鑰） */
   const addPasskey = () =>
@@ -134,22 +126,6 @@ function SecurityBody() {
       const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "removeKey", args: [k.keyId] }));
       const res = await runOp(w, call, confirmOnCard);
       toast(<span>已移除 {k.label} <TxLink hash={res.txHash} /></span>, "ok");
-    });
-
-  const saveLimits = () =>
-    wrap("limits", async () => {
-      const perTx = parseUnits(limits.perTx || "0", TWDC_DECIMALS);
-      const daily = parseUnits(limits.daily || "0", TWDC_DECIMALS);
-      const lowering = current && perTx <= current.perTx && daily <= current.daily;
-      if (lowering || chain.masterMode) {
-        const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "setLimits", args: [DEPLOYMENT.twdc, perTx, daily] }));
-        const res = await runOp(w, call, confirmOnCard);
-        toast(<span>額度已更新 <TxLink hash={res.txHash} /></span>, "ok");
-      } else {
-        const payload = encodeAbiParameters([{ type: "address" }, { type: "uint128" }, { type: "uint128" }], [DEPLOYMENT.twdc, perTx, daily]);
-        await schedule(Action.SET_LIMITS, payload, `調升額度：單筆 ${limits.perTx}／每日 ${limits.daily}`);
-      }
-      setLimits({ perTx: "", daily: "" });
     });
 
   const execSchedule = (s: LocalSchedule) =>
@@ -302,21 +278,21 @@ function SecurityBody() {
       </Panel>
 
       <Panel title="TWDC 額度">
-        {current && (
-          <p className="mb-3 text-sm text-ink-2">目前：單筆 {fmtTwdc(current.perTx)}／每日 {fmtTwdc(current.daily)}</p>
+        {current ? (
+          <div className="grid grid-cols-2 gap-3 text-sm" data-testid="limits">
+            <div className="rounded-xl border border-line px-3 py-2.5">
+              <div className="text-xs text-ink-3">單筆上限</div>
+              <div className="font-semibold">{fmtTwdc(current.perTx)} TWDC</div>
+            </div>
+            <div className="rounded-xl border border-line px-3 py-2.5">
+              <div className="text-xs text-ink-3">每日上限</div>
+              <div className="font-semibold">{fmtTwdc(current.daily)} TWDC</div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-ink-3">讀取中…</p>
         )}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="單筆上限">
-            <input className={inputCls} value={limits.perTx} onChange={(e) => setLimits({ ...limits, perTx: e.target.value })} inputMode="decimal" />
-          </Field>
-          <Field label="每日上限">
-            <input className={inputCls} value={limits.daily} onChange={(e) => setLimits({ ...limits, daily: e.target.value })} inputMode="decimal" />
-          </Field>
-        </div>
-        <Button className="mt-3 w-full" variant="secondary" onClick={saveLimits} busy={busy === "limits"} disabled={!limits.perTx || !limits.daily}>
-          更新額度
-        </Button>
-        <p className="mt-2 text-xs text-ink-3">調降立即生效；調升在主金鑰模式需卡片確認，標準模式需排程 24 小時。</p>
+        <p className="mt-2 text-xs text-ink-3">交易額度由 CAFECA 依實名等級與風控設定，使用者無法自行調整；需要調升或調降請聯絡客服。超過日常額度的交易需要實體卡確認。</p>
       </Panel>
 
       {schedules.length > 0 && (

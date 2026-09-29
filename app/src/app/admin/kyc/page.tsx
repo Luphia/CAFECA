@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { AdminLogin, adminCall as call } from "@/components/admin-login";
 import { Badge, Button, Notice, Panel, Spinner, cx, errMsg, inputCls, short } from "@/components/ui";
 
 type Check = { ok: boolean; detail: string };
@@ -38,12 +39,6 @@ const CHECK_LABEL: Record<string, string> = {
 const FIELD_LABEL: Record<string, string> = { name: "姓名", birthday: "出生日期", sex: "性別", docType: "證件類型", issueDate: "發證日期", nationality: "國籍", idNumberHash: "統一編號 HMAC" };
 const STATUS_TONE: Record<string, "warn" | "ok" | "danger" | "neutral"> = { review: "warn", approved: "ok", rejected: "danger", pending: "neutral", processing: "neutral" };
 
-async function call<T>(url: string, body?: unknown): Promise<T> {
-  const r = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : undefined);
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error((j as { error?: string }).error ?? `HTTP ${r.status}`), { status: r.status });
-  return j as T;
-}
 
 /**
  * KYC 人工複核後台（規格 §14.3「中信心 → 人工複核」）。
@@ -74,7 +69,7 @@ export default function KycReviewPage() {
     load();
   }, [load]);
 
-  if (needLogin) return <Login onDone={load} />;
+  if (needLogin) return <AdminLogin title="KYC 人工複核" onDone={load} />;
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 px-5 py-8">
@@ -123,44 +118,6 @@ export default function KycReviewPage() {
   );
 }
 
-function Login({ onDone }: { onDone: () => void }) {
-  const [token, setToken] = useState("");
-  const [name, setName] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  return (
-    <div className="mx-auto max-w-sm space-y-4 px-5 py-16">
-      <h1 className="text-2xl font-bold">KYC 人工複核</h1>
-      <Panel>
-        <div className="space-y-3">
-          <input className={inputCls} placeholder="複核人姓名" value={name} onChange={(e) => setName(e.target.value)} data-testid="reviewer-name" />
-          <input className={inputCls} placeholder="KYC_REVIEW_TOKEN" type="password" value={token} onChange={(e) => setToken(e.target.value)} data-testid="reviewer-token" />
-          {err && <Notice tone="danger">{err}</Notice>}
-          <Button
-            className="w-full"
-            busy={busy}
-            testId="reviewer-login"
-            onClick={async () => {
-              setBusy(true);
-              setErr(null);
-              try {
-                await call("/api/admin/kyc/login", { token, name });
-                onDone();
-              } catch (e) {
-                setErr(errMsg(e));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            登入
-          </Button>
-          <p className="text-xs text-ink-3">所有檢視與決策都會記錄複核人姓名。</p>
-        </div>
-      </Panel>
-    </div>
-  );
-}
 
 function Detail({ c, onDone }: { c: Case; onDone: () => void }) {
   const [note, setNote] = useState("");

@@ -247,6 +247,8 @@ WebAuthnSig    = (bytes   authenticatorData,
 
 驗證時綁定的是 `rpIdHash`，合約不檢查 `clientDataJSON` 裡的 `origin`。
 
+交易額度（單筆與每日上限）只能由 CAFECA 管理者調整（KeyringValidator v2 的 `setLimitsFor`，發出 `LimitsSetByAdmin` 事件），使用者的裝置金鑰與實體卡都不能修改；透過簽章通道送出的 `sendCalls` 也一樣。
+
 #### 5.4 其他簽章格式
 
 | 對象 | 格式 |

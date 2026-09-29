@@ -256,7 +256,8 @@ async function main() {
   const n = await pub.getTransactionCount({ address: deployer.address, blockTag: "pending" });
   const predict = (k: number) => getContractAddress({ from: deployer.address, nonce: BigInt(n + k) });
   const [pKeyring, pRecovery, pCv, pCm] = [predict(0), predict(1), predict(2), predict(3)];
-  const keyring = await deploy("KeyringValidator", [pRecovery, pCm, pCv, deviceDirectory, attestation]);
+  // limitAdmin：交易額度只能由管理者調整（測試網＝部署者／營運錢包；正式環境改為多簽）
+  const keyring = await deploy("KeyringValidator", [pRecovery, pCm, pCv, deviceDirectory, attestation, deployer.address]);
   const recovery = await deploy("RecoveryValidator", [keyring, attestation]);
   const channelValidator = await deploy("ChannelValidator");
   const channelManager = await deploy("ChannelManager", [accountImpl, channelValidator]);

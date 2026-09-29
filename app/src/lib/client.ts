@@ -145,7 +145,7 @@ export async function smartSigner(
 ): Promise<{ signer: Signer; needs: "passkey" | "card" }> {
   const pv = await preview(account, callData);
   if (pv.req === Req.REJECT) {
-    throw new Error("目前不允許這個操作：可能超過額度（標準模式調升額度需排程 24 小時），或需要實體卡本身確認");
+    throw new Error("目前不允許這個操作：可能超過額度（額度只能由 CAFECA 調整），或需要實體卡本身確認");
   }
   if (pv.req === Req.MASTER) {
     return {

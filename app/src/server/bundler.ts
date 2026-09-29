@@ -4,7 +4,9 @@ import {
   ContractFunctionRevertedError,
   concat,
   decodeErrorResult,
+  decodeAbiParameters,
   decodeEventLog,
+  decodeFunctionData,
   numberToHex,
   pad,
   toHex,
@@ -57,12 +59,48 @@ function opForAbi(op: UserOp) {
   };
 }
 
+/**
+ * 交易額度只能由管理者調整：拒絕贊助任何「帳戶自行修改額度」的 UserOp。
+ * KeyringValidator v2 在鏈上直接拒絕；v1（舊部署）靠這裡擋下，並由 paymaster 不贊助。
+ */
+export function assertNoSelfLimitChange(callData: Hex) {
+  let execs: { target: Address; data: Hex }[] = [];
+  try {
+    const { functionName, args } = decodeFunctionData({ abi: cafecaAccountAbi, data: callData });
+    if (functionName !== "execute") return;
+    const [mode, ec] = args as [Hex, Hex];
+    if (BigInt(mode) >> 248n === 1n) {
+      const [list] = decodeAbiParameters([{ type: "tuple[]", components: [{ name: "target", type: "address" }, { name: "value", type: "uint256" }, { name: "callData", type: "bytes" }] }], ec);
+      execs = list.map((e) => ({ target: e.target, data: e.callData }));
+    } else {
+      execs = [{ target: `0x${ec.slice(2, 42)}` as Address, data: `0x${ec.slice(106)}` as Hex }];
+    }
+  } catch {
+    return;
+  }
+  for (const e of execs) {
+    if (e.target.toLowerCase() !== DEPLOYMENT.keyring.toLowerCase() || e.data.length < 10) continue;
+    let fn: string;
+    let fargs: readonly unknown[] = [];
+    try {
+      ({ functionName: fn, args: fargs = [] } = decodeFunctionData({ abi: keyringValidatorAbi, data: e.data }) as { functionName: string; args?: readonly unknown[] });
+    } catch {
+      continue;
+    }
+    const setLimitsAction = 2; // Action.SET_LIMITS
+    if (fn === "setLimits" || ((fn === "schedule" || fn === "executeScheduled") && Number(fargs[0]) === setLimitsAction)) {
+      throw new HttpError(403, "交易額度只能由 CAFECA 管理者調整，請聯絡客服");
+    }
+  }
+}
+
 export async function prepareUserOp(p: {
   sender: Address;
   validator: Address;
   callData: Hex;
   initCode?: Hex;
 }): Promise<{ userOp: UserOp; userOpHash: Hex }> {
+  assertNoSelfLimitChange(p.callData);
   const d = DEPLOYMENT;
   const nonce = await publicClient.readContract({
     address: d.entryPoint,

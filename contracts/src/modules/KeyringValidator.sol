@@ -59,6 +59,8 @@ interface INftApproval {
 ///         - 平台備援金鑰不在本合約，由 RecoveryValidator 管理（KYC 通過後安裝，同樣不可被裝置或卡片移除）。
 /// @dev 設計規格 §4、§5、§9、§10。
 ///      儲存一律以帳戶為最內層 key（ERC-7562 associated storage）。
+///      交易額度（v2）：只有 limitAdmin（CAFECA 管理者；正式環境為多簽）能調升或調降，使用者的任何金鑰都不能改，
+///      也不能排程修改。每次調整都發出 LimitsSetByAdmin（含原因碼與管理者地址）供稽核。
 ///      注意：每日額度與時間鎖在驗證階段讀取 block.timestamp，需 CAFECA bundler 放寬 ERC-7562
 ///      的 TIMESTAMP 規則（見規格 §12 待決事項），或改以執行期 hook 實作。
 contract KeyringValidator is IValidator {
@@ -159,6 +161,10 @@ contract KeyringValidator is IValidator {
     address public immutable deviceDirectory;
     address public immutable cardIssuerRegistry;
 
+    /// @notice 交易額度管理者（兩段式移轉）
+    address public limitAdmin;
+    address public pendingLimitAdmin;
+
     // ───────────────────────── 儲存 ─────────────────────────
 
     mapping(bytes32 keyId => mapping(address account => Key)) internal _keys;
@@ -177,6 +183,10 @@ contract KeyringValidator is IValidator {
     event ScheduleExecuted(address indexed account, bytes32 indexed actionHash);
     event ScheduleCancelled(address indexed account, bytes32 indexed actionHash);
     event KeysWiped(address indexed account);
+    /// @param reason 1 使用者申請、2 風控調降、3 KYC 等級變更、4 法遵要求、255 其他
+    event LimitsSetByAdmin(address indexed account, address indexed token, uint128 perTx, uint128 daily, uint8 reason, address admin);
+    event LimitAdminTransferStarted(address indexed next);
+    event LimitAdminChanged(address indexed admin);
 
     error AlreadyInitialized();
     error NotInitialized();
@@ -191,19 +201,24 @@ contract KeyringValidator is IValidator {
     error KycRequired();
     error NotACard();
     error ScheduleViaInstallModule();
+    error LimitsManagedByAdmin();
+    error OnlyLimitAdmin();
 
     constructor(
         address recovery_,
         address channelManager_,
         address channelControl_,
         address deviceDirectory_,
-        address cardIssuerRegistry_
+        address cardIssuerRegistry_,
+        address limitAdmin_
     ) {
         recovery = recovery_;
         channelManager = channelManager_;
         channelControl = channelControl_;
         deviceDirectory = deviceDirectory_;
         cardIssuerRegistry = cardIssuerRegistry_;
+        limitAdmin = limitAdmin_;
+        emit LimitAdminChanged(limitAdmin_);
     }
 
     // ───────────────────────── ERC-7579 模組 ─────────────────────────
@@ -472,26 +487,15 @@ contract KeyringValidator is IValidator {
                 c.signer = keyId;
             }
         } else if (fsel == this.setLimits.selector) {
-            (address token, uint128 perTx, uint128 daily) =
-                abi.decode(ExecLib.args(e.callData), (address, uint128, uint128));
-            Limit memory cur = limits[token][account];
-            c.s.token = token;
-            c.s.amount = perTx;
-            c.s.extra = bytes32(uint256(daily));
-            if (perTx <= cur.perTx && daily <= cur.daily) {
-                c.s.kind = uint8(OpKind.LIMIT_LOWER);
-                c.frozenOk = true;
-            } else {
-                c.s.kind = uint8(OpKind.LIMIT_RAISE);
-                c.r = master ? Req.MASTER : Req.REJECT;
-            }
+            // 額度只能由管理者調整（setLimitsFor），任何使用者金鑰都不行
+            c.r = Req.REJECT;
         } else if (fsel == this.schedule.selector) {
             (uint8 action, bytes memory payload) = abi.decode(ExecLib.args(e.callData), (uint8, bytes));
             c.s.kind = uint8(OpKind.SCHEDULE);
             c.s.amount = action;
             c.s.extra = keccak256(abi.encode(action, payload));
-            bool sensitive = action == uint8(Action.SET_LIMITS) || action == uint8(Action.MODULE);
-            c.r = (sensitive && master) ? Req.MASTER : Req.DAILY;
+            c.r = action == uint8(Action.MODULE) ? (master ? Req.MASTER : Req.DAILY) : Req.DAILY;
+            if (action == uint8(Action.SET_LIMITS)) c.r = Req.REJECT;
             if (action == uint8(Action.REMOVE_KEY) && payload.length == 32) {
                 if (_keys[abi.decode(payload, (bytes32))][account].keyClass == KeyClass.MASTER) c.r = Req.REJECT;
             }
@@ -647,9 +651,30 @@ contract KeyringValidator is IValidator {
         _removeKey(msg.sender, keyId);
     }
 
-    function setLimits(address token, uint128 perTx, uint128 daily) external {
-        _requireInit(msg.sender);
-        _setLimits(msg.sender, token, perTx, daily);
+    /// @notice v2：帳戶不能自行修改額度（保留函式讓舊介面得到明確的錯誤）
+    function setLimits(address, uint128, uint128) external pure {
+        revert LimitsManagedByAdmin();
+    }
+
+    /// @notice 管理者調整帳戶的交易額度（調升或調降）
+    function setLimitsFor(address account, address token, uint128 perTx, uint128 daily, uint8 reason) external {
+        if (msg.sender != limitAdmin) revert OnlyLimitAdmin();
+        _requireInit(account);
+        _setLimits(account, token, perTx, daily);
+        emit LimitsSetByAdmin(account, token, perTx, daily, reason, msg.sender);
+    }
+
+    function transferLimitAdmin(address next) external {
+        if (msg.sender != limitAdmin) revert OnlyLimitAdmin();
+        pendingLimitAdmin = next;
+        emit LimitAdminTransferStarted(next);
+    }
+
+    function acceptLimitAdmin() external {
+        if (msg.sender != pendingLimitAdmin) revert OnlyLimitAdmin();
+        limitAdmin = msg.sender;
+        pendingLimitAdmin = address(0);
+        emit LimitAdminChanged(msg.sender);
     }
 
     /// @param action Action 列舉值
@@ -678,8 +703,7 @@ contract KeyringValidator is IValidator {
         } else if (action == uint8(Action.REMOVE_KEY)) {
             _removeKey(msg.sender, abi.decode(payload, (bytes32)));
         } else if (action == uint8(Action.SET_LIMITS)) {
-            (address token, uint128 perTx, uint128 daily) = abi.decode(payload, (address, uint128, uint128));
-            _setLimits(msg.sender, token, perTx, daily);
+            revert LimitsManagedByAdmin();
         } else {
             revert ScheduleViaInstallModule();
         }

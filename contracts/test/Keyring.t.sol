@@ -265,25 +265,71 @@ contract KeyringTest is Base {
         assertEq(uint8(keyring.getKey(account, _keyId(PHONE)).keyClass), uint8(KeyringValidator.KeyClass.NONE));
     }
 
-    function test_Master_LimitLowerByPhone_RaiseNeedsCard() public {
+    function test_Limits_UserCannotChange_EvenWithCard() public {
         _bindCard(account);
         bytes memory lower =
             _exec(address(keyring), 0, abi.encodeCall(keyring.setLimits, (address(twdc), uint128(1_000e6), uint128(5_000e6))));
-        PackedUserOperation memory op = _op(account, address(keyring), lower);
-        _signDaily(op, PHONE);
-        _handle(op);
-
         bytes memory raise =
             _exec(address(keyring), 0, abi.encodeCall(keyring.setLimits, (address(twdc), uint128(50_000e6), uint128(100_000e6))));
-        op = _op(account, address(keyring), raise);
+        PackedUserOperation memory op = _op(account, address(keyring), lower);
         _signDaily(op, PHONE);
         _handleExpectFail(op);
-
         op = _op(account, address(keyring), raise);
         _signCard(op);
-        _handle(op);
-        (uint128 perTx,) = keyring.limits(address(twdc), account);
+        _handleExpectFail(op);
+        // 排程修改也不行
+        bytes memory sched = _exec(
+            address(keyring), 0, abi.encodeCall(keyring.schedule, (uint8(2), abi.encode(address(twdc), uint128(50_000e6), uint128(100_000e6))))
+        );
+        op = _op(account, address(keyring), sched);
+        _signCard(op);
+        _handleExpectFail(op);
+        // 直接呼叫也不行
+        vm.prank(account);
+        vm.expectRevert(KeyringValidator.LimitsManagedByAdmin.selector);
+        keyring.setLimits(address(twdc), 1, 1);
+        (uint128 perTx, uint128 daily) = keyring.limits(address(twdc), account);
+        assertEq(perTx, 10_000e6);
+        assertEq(daily, 30_000e6);
+    }
+
+    function test_Limits_AdminRaisesAndLowers() public {
+        vm.expectRevert(KeyringValidator.OnlyLimitAdmin.selector);
+        keyring.setLimitsFor(account, address(twdc), 50_000e6, 100_000e6, 1);
+
+        vm.prank(gov);
+        vm.expectEmit(true, true, false, true);
+        emit KeyringValidator.LimitsSetByAdmin(account, address(twdc), 50_000e6, 100_000e6, 1, gov);
+        keyring.setLimitsFor(account, address(twdc), 50_000e6, 100_000e6, 1);
+        (uint128 perTx, uint128 daily) = keyring.limits(address(twdc), account);
         assertEq(perTx, 50_000e6);
+        assertEq(daily, 100_000e6);
+
+        vm.prank(gov);
+        keyring.setLimitsFor(account, address(twdc), 500e6, 1_000e6, 2);
+        (perTx, daily) = keyring.limits(address(twdc), account);
+        assertEq(perTx, 500e6);
+
+        // 未初始化的帳戶不能設定
+        vm.prank(gov);
+        vm.expectRevert(KeyringValidator.NotInitialized.selector);
+        keyring.setLimitsFor(makeAddr("nobody"), address(twdc), 1, 1, 1);
+    }
+
+    function test_Limits_AdminTransferIsTwoStep() public {
+        address next = makeAddr("nextAdmin");
+        vm.prank(gov);
+        keyring.transferLimitAdmin(next);
+        assertEq(keyring.limitAdmin(), gov);
+        vm.prank(makeAddr("x"));
+        vm.expectRevert(KeyringValidator.OnlyLimitAdmin.selector);
+        keyring.acceptLimitAdmin();
+        vm.prank(next);
+        keyring.acceptLimitAdmin();
+        assertEq(keyring.limitAdmin(), next);
+        vm.prank(gov);
+        vm.expectRevert(KeyringValidator.OnlyLimitAdmin.selector);
+        keyring.setLimitsFor(account, address(twdc), 1, 1, 1);
     }
 
     function test_Master_UnlimitedApproveNeedsCard() public {

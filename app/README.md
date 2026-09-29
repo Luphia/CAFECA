@@ -62,8 +62,9 @@ PUBLIC_ORIGIN=https://cafeca.io npm run deploy:server
 | `/wallet` | TWDC 餘額、轉帳（即時預覽需要手機或卡片）、收款 QR、測試幣、額度、紀錄 | §4.3 |
 | `/card` | 完成 KYC 後付費購買實體卡（TWDC 付款給發卡方）→ 綁定、掛失補發、Visa 通道、POS 刷卡模擬 | §4.5、§6.4、§9 |
 | `/agents` | AI 代理與支出通道、x402 商家購買、超額 intent 以卡片核准、撥款、撤銷 | §6 |
-| `/chat` | 代稱（第一次設定免費、之後固定，變更需付 150 TWDC，舊代稱保留）、裝置金鑰上鏈、E2EE 訊息、付款請求與聊天內付款、AI 核准通知 | §7 |
-| `/security` | 裝置金鑰（同級、可互相移除）、實體卡與平台備援金鑰（不可移除）、連結其他裝置、額度、恢復狀態與取消、登出 | §4、§5 |
+| `/chat` | 「＋」選單：轉帳、收款、相機、檔案（10 MB 內，本機加密後才上傳）、分享位置（確認後才送出）；代稱（第一次設定免費、之後固定，變更需付 150 TWDC，舊代稱保留）、裝置金鑰上鏈、E2EE 訊息、付款請求與聊天內付款、AI 核准通知 | §7 |
+| `/security` | 裝置金鑰（同級、可互相移除）、實體卡與平台備援金鑰（不可移除）、連結其他裝置、額度（唯讀）、恢復狀態與取消、登出 | §4、§5 |
+| `/admin/limits` | 交易額度管理（只給管理者）：查詢帳戶額度與今日已用、調升或調降（原因碼＋備註必填）、鏈上調整紀錄 | §4.3 |
 | `/dl/auth` | Sign in with CAFECA：第三方網站免註冊登入（彈出視窗／整頁導向／跨裝置 QR），顯示網域與第一次連線提醒、可取消提供的資料；`/security` 列出登入過的網站。串接說明見[根目錄 README](../README.md#sign-in-with-cafeca第三方網站登入串接) | §15 |
 | `/dl/sign` | 簽章通道：登入時同意開啟後，網站可請你簽署訊息、EIP-712 或付款；並列顯示網站說明與錢包解析的實際內容，逐筆確認；跨裝置經加密中繼，錢包開啟時跳出提示；`/security` 可關閉通道 | §15.8 |
 | `/recover` | 找到身分 → 新裝置建立金鑰 → 實體卡立即新增，或以證件＋臉部影像讓平台備援金鑰發起恢復（48h／有卡 7 天） | §5 |
@@ -144,6 +145,10 @@ npm run build
 **人工複核後台 `/admin/kyc`**：以 `.env.local` 的 `KYC_REVIEW_TOKEN`（`npm run deploy` 會自動產生）登入並填寫複核人姓名。可以看到浮水印版證件、臉部影片、每項檢查、擷取欄位與分數，然後核准或退件。每次登入、檢視檔案與決策都寫入 `data/kyc/review-log.jsonl`。核准開戶案件＝寫入 L2；核准恢復案件＝以平台備援金鑰發起恢復。
 
 **KYC Credential（規格 §16.3）**：第三方登入要求 `legal_name`、`doc_type`、`nationality`、`pairwise_id` 時，同意畫面向 `/api/kyc/credential` 取得由 KYC 簽章者簽署、綁定網站與這次登入 nonce 的 credential（`src/server/kyc-credential.ts`）。資料來自最新一筆核准案件的擷取欄位。`pairwise_id` 使用 `.env.local` 的 `KYC_PAIRWISE_KEY`（`npm run deploy`／`deploy:server` 會自動產生）；**這把金鑰一旦有網站使用就不能更換**，否則所有網站看到的同一人識別碼都會改變。沒有設定時不提供 `pairwise_id`。
+
+**交易額度只能由管理者調整**：KeyringValidator v2 的 `setLimits` 與排程修改額度一律拒絕（實體卡也不行），只有 `limitAdmin` 能呼叫 `setLimitsFor(account, token, perTx, daily, reason)`，每次調整發出 `LimitsSetByAdmin`。測試網 `limitAdmin`＝部署者（營運錢包），正式環境請以 `transferLimitAdmin`／`acceptLimitAdmin` 移交給多簽。管理後台 `/admin/limits` 與 KYC 複核共用 `KYC_REVIEW_TOKEN` 登入，每次查詢與調整都寫入 `data/kyc/review-log.jsonl`。
+
+> **已部署的測試網仍是 v1。** v1 的額度寫在使用者帳戶可自行修改的位置，管理者無法調整；目前由 bundler 拒絕贊助任何修改額度的操作（暫時防護，自備 BOLT 直接送交易仍可繞過）。要換成 v2 必須重新部署帳戶相關合約（`npm run deploy`，KeyringValidator 與工廠都會換新），**既有測試網身分的地址會改變、需要重新開戶**。
 
 **伺服器需求**
 
