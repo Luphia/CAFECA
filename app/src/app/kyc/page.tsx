@@ -21,7 +21,7 @@ type KycView = {
   createdAt: number;
   reasons: string[];
   result: { txHash?: string; error?: string } | null;
-  submitted?: { actions: string[]; face: string };
+  submitted?: { actions: string[] };
   processedAt?: number | null;
   reviewedAt?: number | null;
 };
@@ -68,14 +68,13 @@ function Submitted({ v }: { v: KycView }) {
         {v.status === "review" && <p className="mb-3 text-xs text-ink-2">系統無法自動確認全部項目，已轉由審核人員確認，通常在 1 個工作天內完成，不需要重新送出。</p>}
         {inAuto && <p className="mb-3 text-xs text-ink-2">約需 10–60 秒，可以離開這個頁面，完成後回來就會看到結果。</p>}
 
-        <div className="mb-1.5 text-xs font-medium text-ink-3">送出的內容（已加浮水印，只有你與審核人員看得到）</div>
+        <div className="mb-1.5 text-xs font-medium text-ink-3">送出的證件（已加浮水印，只有你與審核人員看得到）</div>
         <div className="grid grid-cols-2 gap-2">
           {(["front", "back"] as const).map((k) => (
             // eslint-disable-next-line @next/next/no-img-element
             <img key={k} src={file(k)} alt={k === "front" ? "證件正面" : "證件背面"} className="aspect-[1.58] w-full rounded-lg border border-line object-cover" data-testid={`kyc-sub-${k}`} />
           ))}
         </div>
-        <video src={file("face")} controls playsInline preload="metadata" className="mt-2 aspect-video w-full rounded-lg border border-line bg-black object-contain" data-testid="kyc-sub-face" />
         {!!v.submitted?.actions.length && (
           <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
             <span className="text-ink-3">活體動作：</span>
