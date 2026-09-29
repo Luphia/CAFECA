@@ -46,6 +46,8 @@ export const TWDC_DECIMALS = 6;
 
 /** 實體卡售價（測試網以 TWDC 支付給發卡方） */
 export const CARD_PRICE_TWDC = "1200";
+/** 代稱設定後即固定；每次變更的費用 */
+export const HANDLE_CHANGE_PRICE_TWDC = "150";
 
 /** 金鑰類別、權限需求（對應 KeyringValidator 的 enum）：DAILY＝裝置金鑰（所有裝置同級），MASTER＝實體卡 */
 export const KeyClass = { NONE: 0, DAILY: 1, MASTER: 2 } as const;

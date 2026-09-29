@@ -42,7 +42,11 @@ export type VisaAuth = {
 
 export type Store = {
   handles: Record<string, string>; // handle → address
-  profiles: Record<string, { handle: string; iss: string; createdAt: number }>;
+  profiles: Record<string, { handle: string; iss: string; createdAt: number; changedAt?: number }>;
+  /** 變更代稱後保留的舊代稱（舊代稱 → 原擁有者），其他人不能註冊 */
+  retiredHandles?: Record<string, string>;
+  /** 代稱變更付款（交易雜湊 → 付款紀錄） */
+  handleFees?: Record<string, { owner: string; paidAt: number; used: boolean; usedFor?: string; usedAt?: number }>;
   messages: ChatMessage[];
   agents: Record<string, AgentRecord>; // id → record
   visa: VisaAuth[];

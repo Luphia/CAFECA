@@ -164,7 +164,7 @@ SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 ex
 2. 計算 `hash = hashTypedData(domain, SignIn, message)`。
 3. 以 `eth_call` 呼叫 `account.isValidSignature(hash, signature)`，結果必須等於 `0x1626ba7e`。
 4. 若 `claims` 含 `kyc_level`：呼叫 `identityRegistry.statusOf(account)`（IdentityRegistry v2，見第 9 節），以 `effectiveLevel` 為等級；正式實名還要求 `signerClass == PRODUCTION`。舊部署沒有 v2 時才讀 `attestation.levelOf(account)`。
-5. 若含 `handle`：呼叫 `GET https://<錢包網域>/api/profile?q=<account>` 取得代稱。代稱存在 CAFECA 伺服器，不上鏈；回應裡自稱的 `claims.handle` 不可信任。
+5. 若含 `handle`：呼叫 `GET https://<錢包網域>/api/profile?q=<account>` 取得代稱。代稱存在 CAFECA 伺服器，不上鏈；回應裡自稱的 `claims.handle` 不可信任。代稱第一次設定後固定，但使用者付費後可以變更（舊代稱保留、不會轉給別人），所以帳戶主鍵請用 `account`，不要用代稱。
 6. 可選：呼叫 `recovery.isPending(account)`，檢查身分是否正在恢復中。
 7. 若 `message.channel` 不是空字串：確認其中的網站公鑰是你自己產生的（`verify(…, { channelPub })`），到期時間不超過登入時間加 30 天。
 8. 若 `claims` 含 `legal_name`、`doc_type`、`nationality`、`pairwise_id` 其中之一：依第 9 節驗證 `credential`。使用者同意但錢包沒有資料時，回應裡不會有對應欄位。

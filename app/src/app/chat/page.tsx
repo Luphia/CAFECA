@@ -13,6 +13,7 @@ import { useCardConfirm } from "@/components/card-provider";
 import { useWallet } from "@/components/wallet-provider";
 import { Badge, Button, cx, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
 import { AddressInput } from "@/components/address-input";
+import { HandlePanel } from "@/components/handle-panel";
 
 type RawMsg = {
   id: string;
@@ -42,7 +43,7 @@ export default function ChatPage() {
 }
 
 function ChatBody() {
-  const { wallet, handle, refreshSession } = useWallet();
+  const { wallet } = useWallet();
   const toast = useToast();
   const me = wallet!.address.toLowerCase();
   const [deviceReady, setDeviceReady] = useState<boolean | null>(null);
@@ -51,7 +52,6 @@ function ChatBody() {
   const [handles, setHandles] = useState<Record<string, string | null>>({});
   const [peer, setPeer] = useState<string | null>(null);
   const [newPeer, setNewPeer] = useState("");
-  const [handleInput, setHandleInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [chainTx, setChainTx] = useState<ChainTx[]>([]);
   const [extraHandles, setExtraHandles] = useState<Record<string, string | null>>({});
@@ -170,16 +170,6 @@ function ChatBody() {
     }
   };
 
-  const saveHandle = async () => {
-    try {
-      await api("/api/profile", { handle: handleInput });
-      await refreshSession();
-      toast("代稱已設定", "ok");
-    } catch (e) {
-      toast(errMsg(e), "danger");
-    }
-  };
-
   const allHandles = useMemo(() => ({ ...extraHandles, ...handles }), [extraHandles, handles]);
 
   const peers = useMemo(() => {
@@ -246,16 +236,7 @@ function ChatBody() {
 
   return (
     <>
-      {!handle && (
-        <Panel title="設定你的代稱">
-          <p className="mb-2 text-sm text-ink-2">朋友可以用 @代稱 找到你、轉帳給你。</p>
-          <div className="flex gap-2">
-            <input className={inputCls} value={handleInput} onChange={(e) => setHandleInput(e.target.value)} placeholder="例如 luphia" />
-            <Button onClick={saveHandle}>設定</Button>
-          </div>
-        </Panel>
-      )}
-      {handle && <div className="text-sm text-ink-2">你的代稱：<span className="font-semibold text-ink">@{handle}</span></div>}
+      <HandlePanel />
 
       <div className="flex gap-2">
         <AddressInput value={newPeer} onChange={setNewPeer} placeholder="輸入 @代稱 或地址開始聊天" />

@@ -3,6 +3,7 @@ import { authorizeGuardian, currentGuardian, guardianAddress } from "@/server/gu
 import { intakeEvidence } from "@/server/kyc";
 import { enqueue, findCase, publicView, saveCase } from "@/server/kyc-queue";
 import { handle, HttpError, requireSession } from "@/server/session";
+import { effectiveLevel } from "@/server/identity";
 import { read } from "@/server/store";
 
 /**
@@ -15,6 +16,11 @@ import { read } from "@/server/store";
  */
 export const POST = handle(async (req: Request) => {
   const me = await requireSession();
+  // 已送出的案件還在審核中、或已經通過且仍有效時，不能再送出
+  const s = await read();
+  const last = Object.entries(s.kyc).find(([k]) => k.toLowerCase() === me.toLowerCase())?.[1]?.cases?.filter((x) => x.purpose === "onboard").sort((a, b) => b.createdAt - a.createdAt)[0];
+  if (last && ["pending", "processing", "review"].includes(last.status)) throw new HttpError(409, "你已經送出實名驗證，正在審核中，不需要重新送出");
+  if (last?.status === "approved" && (await effectiveLevel(me)) >= 2) throw new HttpError(409, "你的實名驗證已經通過");
   const form = await req.formData();
   const c = await intakeEvidence(me, form, "onboard");
   await saveCase(me, { ...c, account: me });

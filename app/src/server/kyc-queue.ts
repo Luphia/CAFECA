@@ -138,5 +138,9 @@ export function publicView(c: KycCase) {
     createdAt: c.createdAt,
     reasons: c.status === "rejected" ? reasons.slice(0, 3) : [],
     result: c.result ?? null,
+    /** 使用者送出的內容（檔案以 /api/kyc/file 取得，只能看自己的） */
+    submitted: { actions: c.actions.map((x) => x.action), face: c.files.face.endsWith("mp4") ? "mp4" : "webm" },
+    processedAt: c.processedAt ?? null,
+    reviewedAt: c.review?.at ?? null,
   };
 }

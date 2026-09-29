@@ -12,10 +12,83 @@ import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
 import { KycCapture, postKyc, type KycEvidence } from "@/components/kyc-capture";
 import { useWallet } from "@/components/wallet-provider";
-import { Badge, Button, Notice, Panel, Spinner, TxLink, errMsg, short, useToast } from "@/components/ui";
+import { Badge, Button, Notice, Panel, Spinner, TxLink, cx, errMsg, short, useToast } from "@/components/ui";
 
 type Guardian = { address: Address; authoritySig: Hex };
-type KycView = { caseId: string; status: "pending" | "processing" | "approved" | "review" | "rejected"; reasons: string[]; result: { txHash?: string; error?: string } | null };
+type KycView = {
+  caseId: string;
+  status: "pending" | "processing" | "approved" | "review" | "rejected";
+  createdAt: number;
+  reasons: string[];
+  result: { txHash?: string; error?: string } | null;
+  submitted?: { actions: string[]; face: string };
+  processedAt?: number | null;
+  reviewedAt?: number | null;
+};
+
+const ACTION_LABEL: Record<string, string> = { up: "抬頭", down: "低頭", left: "左轉", right: "右轉", blink: "眨眼", speak: "念數字" };
+const fmtTime = (t?: number | null) => (t ? new Date(t).toLocaleString("zh-TW", { hour12: false }) : "");
+
+/** 已送出的案件：送出內容與審核進度（審核中不能重新送出） */
+function Submitted({ v }: { v: KycView }) {
+  const inAuto = v.status === "pending" || v.status === "processing";
+  const approved = v.status === "approved";
+  const badge = inAuto ? <Badge tone="brand">自動驗證中</Badge> : v.status === "review" ? <Badge tone="warn">人工複核中</Badge> : approved ? <Badge tone="ok">已通過</Badge> : <Badge tone="danger">未通過</Badge>;
+  const steps: { label: string; state: "done" | "now" | "todo" | "fail"; time?: string }[] = [
+    { label: "已送出", state: "done", time: fmtTime(v.createdAt) },
+    { label: "自動驗證（證件辨識、活體、人臉比對）", state: inAuto ? "now" : "done", time: fmtTime(v.processedAt) },
+    ...(v.status === "review" || v.reviewedAt ? [{ label: "人工複核", state: (v.status === "review" ? "now" : "done") as "now" | "done", time: fmtTime(v.reviewedAt) }] : []),
+    {
+      label: approved ? (v.result?.txHash ? "已寫入 L2 實名證明" : v.result?.error ? "鏈上寫入失敗" : "寫入 L2 實名證明中") : v.status === "rejected" ? "未通過" : "結果",
+      state: approved ? (v.result?.txHash ? "done" : v.result?.error ? "fail" : "now") : v.status === "rejected" ? "fail" : "todo",
+    },
+  ];
+  const file = (kind: string) => `/api/kyc/file?case=${v.caseId}&kind=${kind}`;
+  return (
+    <Panel title="已送出的實名驗證" action={badge}>
+      <div data-testid="kyc-submitted" data-status={v.status}>
+        <ol className="mb-4 space-y-2">
+          {steps.map((st, i) => (
+            <li key={i} className="flex items-start gap-2.5 text-sm">
+              <span
+                className={cx(
+                  "mt-0.5 grid size-5 shrink-0 place-items-center rounded-full text-[11px] font-bold",
+                  st.state === "done" ? "bg-ok text-white" : st.state === "fail" ? "bg-danger text-white" : st.state === "now" ? "bg-brand/15 text-brand" : "bg-line text-ink-3",
+                )}
+              >
+                {st.state === "done" ? "✓" : st.state === "fail" ? "✕" : st.state === "now" ? <Spinner className="size-3" /> : i + 1}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className={st.state === "todo" ? "text-ink-3" : ""}>{st.label}</span>
+                {st.time && <span className="block text-[11px] text-ink-3">{st.time}</span>}
+              </span>
+            </li>
+          ))}
+        </ol>
+        {v.status === "review" && <p className="mb-3 text-xs text-ink-2">系統無法自動確認全部項目，已轉由審核人員確認，通常在 1 個工作天內完成，不需要重新送出。</p>}
+        {inAuto && <p className="mb-3 text-xs text-ink-2">約需 10–60 秒，可以離開這個頁面，完成後回來就會看到結果。</p>}
+
+        <div className="mb-1.5 text-xs font-medium text-ink-3">送出的內容（已加浮水印，只有你與審核人員看得到）</div>
+        <div className="grid grid-cols-2 gap-2">
+          {(["front", "back"] as const).map((k) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img key={k} src={file(k)} alt={k === "front" ? "證件正面" : "證件背面"} className="aspect-[1.58] w-full rounded-lg border border-line object-cover" data-testid={`kyc-sub-${k}`} />
+          ))}
+        </div>
+        <video src={file("face")} controls playsInline preload="metadata" className="mt-2 aspect-video w-full rounded-lg border border-line bg-black object-contain" data-testid="kyc-sub-face" />
+        {!!v.submitted?.actions.length && (
+          <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+            <span className="text-ink-3">活體動作：</span>
+            {v.submitted.actions.map((a, i) => (
+              <span key={i} className="rounded-full border border-line px-2 py-0.5">{ACTION_LABEL[a] ?? a}</span>
+            ))}
+          </div>
+        )}
+        <div className="mt-2 text-[11px] text-ink-3">案件編號 <span className="font-mono">{v.caseId}</span></div>
+      </div>
+    </Panel>
+  );
+}
 
 export default function KycPage() {
   return (
@@ -43,11 +116,31 @@ function KycBody() {
   };
 
   const [pending, setPending] = useState<KycView | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   // 重新整理頁面時，顯示最近一次送出的案件狀態
   useEffect(() => {
-    api<KycView>("/api/kyc").then((v) => ["pending", "processing", "review", "rejected"].includes(v.status) && setPending(v)).catch(() => undefined);
+    api<KycView>("/api/kyc")
+      .then((v) => (["pending", "processing", "review", "rejected"].includes(v.status) || (v.status === "approved" && !v.result?.txHash)) && setPending(v))
+      .catch(() => undefined)
+      .finally(() => setLoaded(true));
   }, []);
+
+  // 審核中：持續更新狀態（人工複核完成後自動切換）
+  const pendingId = pending && pending.status !== "rejected" ? pending.caseId : null;
+  useEffect(() => {
+    if (!pendingId || busy === "submit") return;
+    const t = setInterval(async () => {
+      const v = await api<KycView>(`/api/kyc?case=${pendingId}`).catch(() => null);
+      if (!v) return;
+      setPending(v);
+      if (v.status === "approved" && v.result?.txHash) {
+        clearInterval(t);
+        await refresh();
+      }
+    }, 5000);
+    return () => clearInterval(t);
+  }, [pendingId, busy, refresh]);
 
   /** 後台驗證約需 10–60 秒：輪詢到有結果（通過時等鏈上寫入完成）為止 */
   const waitResult = async (caseId: string): Promise<KycView & { guardian: Guardian | null }> => {
@@ -152,6 +245,17 @@ function KycBody() {
       {chain.identityStatus === IdentityStatus.REVOKED && (
         <Notice tone="danger">你的實名證明已被撤銷。重新完成下方驗證後，會由 KYC 單位重新審核。</Notice>
       )}
+
+      {pending && pending.status !== "rejected" && (
+        <>
+          {(pending.status === "pending" || pending.status === "processing") && (
+            <span className="sr-only" data-testid="kyc-processing">後台正在驗證</span>
+          )}
+          <Submitted v={pending} />
+        </>
+      )}
+      {pending && pending.status !== "rejected" ? null : !loaded ? null : (
+        <>
       <Panel title="為什麼要實名驗證？">
         <ul className="list-disc space-y-1 pl-5 text-sm text-ink-2">
           <li>身分等級提升為 L2，可以向商家、網站證明「我是真人、已成年」而不透露個資</li>
@@ -159,14 +263,12 @@ function KycBody() {
           <li>可以購買 CAFECA 實體卡</li>
         </ul>
       </Panel>
-
-      {pending && (pending.status === "pending" || pending.status === "processing") && (
-        <Notice>
-          <span className="inline-flex items-center gap-2" data-testid="kyc-processing"><Spinner className="text-brand" /> 後台正在驗證你的證件與臉部影像（約 10–60 秒）…</span>
-        </Notice>
+      {pending?.status === "rejected" && (
+        <>
+          <Notice tone="danger">上一次驗證未通過：{pending.reasons.join("；") || "請重新拍攝"}。請依說明重新拍攝後再送出。</Notice>
+          <Submitted v={pending} />
+        </>
       )}
-      {pending?.status === "review" && <Notice tone="warn">你送出的資料需要人工複核，完成後就會生效，不需要重新送出。</Notice>}
-      {pending?.status === "rejected" && <Notice tone="danger">上一次驗證未通過：{pending.reasons.join("；") || "請重新拍攝"}。</Notice>}
 
       <Panel title="證件與臉部影像" action={<Badge tone="warn">測試網</Badge>}>
         <p className="mb-4 text-xs text-ink-3">不需要輸入任何資料：姓名、生日與身分證字號會由系統從證件自動辨識。只能用相機即時拍攝，不能選擇相簿裡的照片。</p>
@@ -180,6 +282,8 @@ function KycBody() {
       <Button className="w-full" onClick={submit} busy={busy === "submit"} disabled={!ev}>
         送出實名驗證
       </Button>
+        </>
+      )}
     </>
   );
 }
