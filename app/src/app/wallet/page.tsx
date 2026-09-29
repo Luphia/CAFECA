@@ -5,6 +5,7 @@ import QRCode from "qrcode";
 import { encodeFunctionData, erc20Abi, formatEther, formatUnits, getAddress, isAddress, parseAbiItem, parseUnits, type Address, type Hex } from "viem";
 import { DEPLOYMENT, EXPLORER, Req, TWDC_DECIMALS } from "@/lib/config";
 import { keyringValidatorAbi } from "@/lib/contracts/abis";
+import { recentLogs } from "@/lib/logs";
 import { api, preview, publicClient, smartSigner, submitOp } from "@/lib/client";
 import { execCall } from "@/lib/userop";
 import { buildDeeplink } from "@/lib/deeplink";
@@ -54,12 +55,21 @@ function WalletBody() {
   const loadActivity = useCallback(async () => {
     try {
       const ev = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
-      const fromBlock = BigInt(DEPLOYMENT.startBlock);
-      const [out, inc] = await Promise.all([
-        publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { from: address }, fromBlock }),
-        publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { to: address }, fromBlock }),
-      ]);
-      const all = [...out, ...inc]
+      // RPC 每次最多查 10,000 個區塊：由新到舊分段掃到 20 筆為止
+      const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+      const logs = await recentLogs(
+        async (lo, hi) => {
+          const [out, inc] = await Promise.all([
+            publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { from: address }, fromBlock: lo, toBlock: hi }),
+            publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { to: address }, fromBlock: lo, toBlock: hi }),
+          ]);
+          return [...out, ...inc];
+        },
+        BigInt(DEPLOYMENT.startBlock),
+        head,
+        20,
+      );
+      const all = logs
         .map((l) => ({ hash: l.transactionHash!, from: l.args.from!, to: l.args.to!, value: l.args.value!, block: l.blockNumber! }))
         .sort((a, b) => Number(b.block - a.block));
       setActivity(all.slice(0, 20));

@@ -1,5 +1,6 @@
 "use client";
 
+import { logsInRange } from "./logs";
 import { createPublicClient, http, parseAbiItem, sha256 as viemSha256, type Address, type Hex } from "viem";
 import { p256 } from "@noble/curves/p256";
 import { boltchain, DEPLOYMENT, Req } from "./config";
@@ -235,8 +236,15 @@ export async function loginWithDevicePasskey(): Promise<{ address: Address; pass
 /** 由鏈上 KeyAdded 事件找出曾加入這把金鑰的帳戶（呼叫端仍須以 getKey 確認目前有效） */
 export async function accountsOfKey(keyId: Hex): Promise<Address[]> {
   const ev = parseAbiItem("event KeyAdded(address indexed account, bytes32 indexed keyId, uint8 keyClass)");
-  const logs = await publicClient
-    .getLogs({ address: DEPLOYMENT.keyring, event: ev, args: { keyId }, fromBlock: BigInt(DEPLOYMENT.startBlock) })
-    .catch(() => []);
+  // RPC 每次最多查 10,000 個區塊：從部署區塊起分段掃描
+  const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+  const logs = await logsInRange(
+    (lo, hi) => publicClient.getLogs({ address: DEPLOYMENT.keyring, event: ev, args: { keyId }, fromBlock: lo, toBlock: hi }),
+    BigInt(DEPLOYMENT.startBlock),
+    head,
+  ).catch((e) => {
+    console.warn("KeyAdded 查詢失敗", e);
+    return [];
+  });
   return [...new Set(logs.map((l) => l.args.account!))];
 }

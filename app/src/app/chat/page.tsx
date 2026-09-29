@@ -14,6 +14,7 @@ import { useWallet } from "@/components/wallet-provider";
 import { Badge, Button, cx, inputCls, Notice, Panel, Spinner, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
 import { AddressInput } from "@/components/address-input";
 import { HandlePanel } from "@/components/handle-panel";
+import { logsInRange, recentLogs } from "@/lib/logs";
 import { MAX_FILE, encryptFile, fetchFile, fmtSize, imageThumb, type FileRef } from "@/lib/chat-file";
 
 type RawMsg = {
@@ -31,6 +32,8 @@ type Loc = { lat: number; lng: number; acc?: number };
 type Payload = { text?: string; amount?: string; memo?: string; txHash?: Hex; requestId?: string; file?: FileRef; loc?: Loc };
 
 const SYSTEM = "system";
+
+const TRANSFER_EVENT = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");type TransferLog = { transactionHash: Hex | null; logIndex: number | null; blockNumber: bigint | null; args: { from?: Address; to?: Address; value?: bigint } };
 
 /** 鏈上的 TWDC 轉帳（不論是在聊天、錢包或其他地方送出，都顯示在與對方的對話中） */
 type ChainTx = { hash: Hex; from: string; to: string; value: bigint; ts: number };
@@ -93,16 +96,28 @@ function ChatBody() {
     if (Object.keys(updates).length) setPlain((p) => ({ ...p, ...updates }));
   }, []);
 
+  const scannedTo = useRef<bigint | null>(null);
+  const txLogs = useRef<TransferLog[]>([]);
+
   /** 讀取與我相關的鏈上 TWDC 轉帳，只保留對方也是 CAFECA 身分的紀錄 */
   const loadChainTx = useCallback(async () => {
-    const ev = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
-    const fromBlock = BigInt(DEPLOYMENT.startBlock);
+    const ev = TRANSFER_EVENT;
     const self = getAddress(me);
-    const [out, inc] = await Promise.all([
-      publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { from: self }, fromBlock }),
-      publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { to: self }, fromBlock }),
-    ]);
-    const logs = [...out, ...inc].sort((a, b) => Number(b.blockNumber! - a.blockNumber!)).slice(0, 100);
+    // RPC 每次最多查 10,000 個區塊：第一次由新到舊掃到 100 筆為止，之後只查新的區塊
+    const window = async (lo: bigint, hi: bigint) => {
+      const [out, inc] = await Promise.all([
+        publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { from: self }, fromBlock: lo, toBlock: hi }),
+        publicClient.getLogs({ address: DEPLOYMENT.twdc, event: ev, args: { to: self }, fromBlock: lo, toBlock: hi }),
+      ]);
+      return [...out, ...inc];
+    };
+    const head = await publicClient.getBlockNumber({ cacheTime: 0 });
+    const scanned = scannedTo.current;
+    const fresh = scanned === null ? await recentLogs(window, BigInt(DEPLOYMENT.startBlock), head, 100) : await logsInRange(window, scanned + 1n, head);
+    scannedTo.current = head;
+    const seen = new Set(txLogs.current.map((l) => `${l.transactionHash}:${l.logIndex}`));
+    txLogs.current = [...txLogs.current, ...fresh.filter((l) => !seen.has(`${l.transactionHash}:${l.logIndex}`))];
+    const logs = [...txLogs.current].sort((a, b) => Number(b.blockNumber! - a.blockNumber!)).slice(0, 100);
     const others = [...new Set(logs.map((l) => (l.args.from!.toLowerCase() === me ? l.args.to! : l.args.from!).toLowerCase()))];
     await Promise.all(
       others
