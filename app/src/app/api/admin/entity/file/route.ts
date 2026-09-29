@@ -8,7 +8,7 @@ import { read } from "@/server/store";
 
 /** 複核人員檢視授權書；每次檢視都寫入稽核紀錄 */
 export const GET = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("kyc");
   const q = new URL(req.url).searchParams;
   const entity = q.get("entity") ?? "";
   if (!isAddress(entity)) throw new HttpError(400, "參數錯誤");

@@ -23,7 +23,7 @@ async function resolve(q: string): Promise<{ account: Address; handle: string | 
 }
 
 export const GET = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("limits");
   const q = new URL(req.url).searchParams.get("q");
   const admin = await limitAdmin();
   if (!q) return Response.json({ admin: who, limitAdmin: admin, supported: !!admin, reasons: LIMIT_REASONS });
@@ -35,7 +35,7 @@ export const GET = handle(async (req: Request) => {
 });
 
 export const POST = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("limits");
   const b = (await req.json().catch(() => ({}))) as { account?: string; perTx?: string; daily?: string; reason?: number; note?: string };
   if (!b.account || !isAddress(b.account)) throw new HttpError(400, "帳戶地址錯誤");
   const num = (v: unknown) => typeof v === "string" && /^\d{1,12}(\.\d{1,6})?$/.test(v);

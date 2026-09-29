@@ -73,6 +73,23 @@ export type Store = {
   relyingParties?: Record<string, RelyingParty>;
   /** 資料調閱申請 */
   disclosures?: Record<string, Disclosure>;
+  /** 管理後台人員（P3-A3）：每人一個帳號、以 Passkey 登入 */
+  staff?: Record<string, Staff>;
+  /** 人員邀請碼（只存 SHA-256；72 小時、一次性） */
+  staffInvites?: Record<string, { name: string; roles: StaffRole[]; staffId?: string; by: string; exp: number; used: boolean }>;
+};
+
+export type StaffRole = "admin" | "kyc" | "disclosure" | "limits" | "audit";
+
+export type Staff = {
+  id: string;
+  name: string;
+  roles: StaffRole[];
+  passkeys: { credentialId: string; qx: string; qy: string; label: string; addedAt: number; lastUsedAt?: number }[];
+  active: boolean;
+  createdAt: number;
+  createdBy: string;
+  lastLoginAt?: number;
 };
 
 export type RelyingParty = {

@@ -10,7 +10,7 @@ import { handle, HttpError } from "@/server/session";
  * POST { id, action: "reject", reason } → 退件
  */
 export const GET = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("disclosure");
   const q = new URL(req.url).searchParams;
   const id = q.get("id");
   if (id) return Response.json({ reviewer: who, ...(await adminDisclosureDetail(who, id)) });
@@ -18,7 +18,7 @@ export const GET = handle(async (req: Request) => {
 });
 
 export const POST = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("disclosure");
   const b = (await req.json().catch(() => ({}))) as { id?: string; action?: string; fields?: string[]; note?: string; reason?: string };
   if (!b.id) throw new HttpError(400, "缺少 id");
   if (b.action === "approve") return Response.json(await approveDisclosure(who, b.id, Array.isArray(b.fields) ? b.fields : [], b.note?.trim().slice(0, 300) || undefined));

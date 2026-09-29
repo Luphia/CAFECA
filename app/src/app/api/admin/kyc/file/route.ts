@@ -8,7 +8,7 @@ import { handle, HttpError } from "@/server/session";
 
 /** 複核人員檢視案件檔案（只有浮水印版證件與臉部影像）；每次檢視都寫入稽核紀錄 */
 export const GET = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("kyc");
   const q = new URL(req.url).searchParams;
   const account = q.get("account") ?? "";
   const id = q.get("case") ?? "";

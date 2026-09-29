@@ -6,7 +6,7 @@ import { read, update } from "@/server/store";
 
 /** 法人驗證人工複核（代理人申請）：列表、核准、退件 */
 export const GET = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("kyc");
   const status = new URL(req.url).searchParams.get("status") ?? "review";
   const s = await read();
   const list = Object.values(s.entities ?? {})
@@ -17,7 +17,7 @@ export const GET = handle(async (req: Request) => {
 });
 
 export const POST = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("kyc");
   const b = (await req.json().catch(() => ({}))) as { entity?: string; id?: string; decision?: string; note?: string };
   if (!b.entity || !isAddress(b.entity)) throw new HttpError(400, "法人帳戶地址錯誤");
   if (b.decision !== "approved" && b.decision !== "rejected") throw new HttpError(400, "決定錯誤");

@@ -6,7 +6,7 @@ import { read } from "@/server/store";
 
 /** GET：待複核（或指定狀態）的案件；POST：核准或退件 */
 export const GET = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("kyc");
   const status = new URL(req.url).searchParams.get("status") ?? "review";
   const s = await read();
   const list = Object.entries(s.kyc)
@@ -18,7 +18,7 @@ export const GET = handle(async (req: Request) => {
 });
 
 export const POST = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("kyc");
   const { account, caseId, decision, note } = (await req.json()) as { account: string; caseId: string; decision: "approved" | "rejected"; note?: string };
   if (!isAddress(account) || !["approved", "rejected"].includes(decision)) throw new HttpError(400, "參數錯誤");
   const c = await findCase(account, caseId);

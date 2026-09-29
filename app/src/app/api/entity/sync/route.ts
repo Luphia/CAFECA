@@ -10,6 +10,6 @@ export const POST = handle(async (req: Request) => {
   if (!hasEntity()) return Response.json({ supported: false, results: [] });
   // ?force=1：立即重新查詢全部法人（只給管理後台登入者）
   const force = new URL(req.url).searchParams.get("force") === "1";
-  if (force) await requireReviewer();
+  if (force) await requireReviewer("kyc");
   return Response.json({ supported: true, results: await monitorEntities({ force }) });
 });

@@ -15,7 +15,8 @@
     "fetch-models": "node scripts/fetch-models.mjs",
     "postinstall": "node scripts/fetch-models.mjs",
     "moeaca:inspect": "tsx --conditions react-server scripts/moeaca-inspect.mts",
-    "rp": "tsx scripts/rp-client.mts"
+    "rp": "tsx scripts/rp-client.mts",
+    "gate": "tsx scripts/launch-gate.mts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

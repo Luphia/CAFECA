@@ -92,7 +92,7 @@ env_set PUBLIC_ORIGIN "$origin"
 ok "PUBLIC_ORIGIN=$origin"
 if [ -z "$(env_get KYC_REVIEW_TOKEN)" ]; then
   env_set KYC_REVIEW_TOKEN "$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
-  ok "已產生 KYC_REVIEW_TOKEN（人工複核後台 $origin/admin/kyc 的密碼，見 .env.local）"
+  ok "已產生 KYC_REVIEW_TOKEN（建立第一位管理者用，見 .env.local；之後人員以 Passkey 登入 $origin/admin）"
 else
   ok "KYC_REVIEW_TOKEN 已設定"
 fi
@@ -112,6 +112,10 @@ fi
 for k in KYC_PROTOTYPE_AUTO_APPROVE NEXT_PUBLIC_KYC_SIMULATE; do
   [ "$(env_get $k)" = "1" ] && warn "$k=1 只限開發，正式環境請移除"
 done
+if [ "$(env_get CAFECA_MODE)" = "production" ]; then
+  npx tsx scripts/launch-gate.mts || die "CAFECA_MODE=production：上線閘門未通過（見上方），請先移除這些設定"
+  ok "正式模式上線閘門通過"
+fi
 [ "$(env_get KYC_AUTO_APPROVE)" = "1" ] && ok "KYC_AUTO_APPROVE=1（高信心案件自動通過）" || ok "KYC_AUTO_APPROVE 未開啟：所有案件轉人工複核（門檻校準前的預設）"
 
 # ───────────────────────── 5. IdentityRegistry v2 ─────────────────────────

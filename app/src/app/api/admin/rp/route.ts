@@ -10,12 +10,12 @@ import { handle, HttpError } from "@/server/session";
  * POST { id, active } → 停用或恢復
  */
 export const GET = handle(async () => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("admin");
   return Response.json({ reviewer: who, relyingParties: await listRelyingParties() });
 });
 
 export const POST = handle(async (req: Request) => {
-  const who = await requireReviewer();
+  const who = await requireReviewer("admin");
   const b = (await req.json().catch(() => ({}))) as { id?: string; active?: boolean; name?: string; ubn?: string; domains?: string[]; contact?: string; encJwk?: JWK | string };
   if (b.id) {
     if (typeof b.active !== "boolean") throw new HttpError(400, "active 必須是 true 或 false");

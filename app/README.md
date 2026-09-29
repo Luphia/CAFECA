@@ -40,7 +40,7 @@ PUBLIC_ORIGIN=https://cafeca.io npm run deploy:server
 1. 安裝 `ffmpeg`（apt／dnf／yum／apk／brew，需要 sudo）
 2. `git pull --ff-only`
 3. `npm install`（含 MediaPipe 與 KYC 模型，約 140 MB，需能連 huggingface.co）
-4. `.env.local`：寫入 `PUBLIC_ORIGIN`；沒有 `KYC_REVIEW_TOKEN` 就產生一組；提醒開發用旗標
+4. `.env.local`：寫入 `PUBLIC_ORIGIN`；沒有 `KYC_REVIEW_TOKEN`（建立第一位管理者用）就產生一組；提醒開發用旗標，`CAFECA_MODE=production` 時上線閘門不通過就停止
 5. 尚未部署 IdentityRegistry v2 時執行 `npm run deploy -- --identity`（部署者需約 6.5 BOLT）
 6. `npm run build`（合約地址在建置時寫入）
 7. 重新啟動：有 pm2 用 `pm2 restart cafeca`（沒有就 `pm2 start npm --name cafeca -- start`），或 `SYSTEMD_UNIT=<服務名>` 改用 systemctl
@@ -66,6 +66,7 @@ PUBLIC_ORIGIN=https://cafeca.io npm run deploy:server
 | `/security` | 資料調閱紀錄（誰依什麼依據調閱了哪些實名資料，當事人同意類以 Passkey 回覆）、裝置金鑰（同級、可互相移除）、實體卡與平台備援金鑰（不可移除）、連結其他裝置、額度（唯讀）、恢復狀態與取消、登出 | §4、§5 |
 | `/company` | 公司帳戶：建立（你成為第一位管理者）、以統編申請商工登記驗證（代表人本人自動通過，否則上傳授權書）、成員（管理者／經辦）、代公司轉帳；登入網站時可選「以公司身分」 | §16.4 |
 | `/admin/entity` | 法人驗證人工複核：商工登記資料、申請人與代表人比對、授權書；核准後簽發法人證明 | §16.4 |
+| `/admin` | 管理後台首頁：以人員 Passkey 登入，依角色列出功能；`/admin/staff` 人員管理（邀請、角色、Passkey、停用），`/admin/join` 受邀者加入 | §16.6 P3 |
 | `/admin/rp` | 依賴方登記：名稱、統編、網域、法遵聯絡人、加密公鑰；API 金鑰只在建立時顯示一次；可停用 | §16.6 P2 |
 | `/admin/disclosures` | 資料調閱雙人覆核：法律依據、客戶關係證明、當事人同意、資料預覽；第一位核准欄位、第二位（不同人）放行或退件 | §16.6 P2 |
 | `/admin/audit` | 稽核紀錄（hash-chained）：查詢與整條鏈驗證，竄改或刪除任一筆都會指出位置 | §16.6 P2 |
@@ -147,11 +148,11 @@ npm run build
 - 全部通過且相似度 ≥ `KYC_AUTO_FACE`（預設 0.45），並且 `KYC_AUTO_APPROVE=1` → 自動通過。
 - 其他一律轉人工複核。**`KYC_AUTO_APPROVE` 預設關閉**：門檻用真實（經同意的）樣本校準前，所有案件都由人審，複核紀錄與分數就是校準資料。
 
-**人工複核後台 `/admin/kyc`**：以 `.env.local` 的 `KYC_REVIEW_TOKEN`（`npm run deploy` 會自動產生）登入並填寫複核人姓名。可以看到浮水印版證件、臉部影片、每項檢查、擷取欄位與分數，然後核准或退件。每次登入、檢視檔案與決策都寫入稽核紀錄 `data/audit/audit.jsonl`（見下方「稽核紀錄」；P2 以前的舊紀錄留在 `data/kyc/review-log.jsonl`）。核准開戶案件＝寫入 L2；核准恢復案件＝以平台備援金鑰發起恢復。
+**人工複核後台 `/admin/kyc`**：需要「KYC 與法人複核」角色（見下方「管理後台人員」）。可以看到浮水印版證件、臉部影片、每項檢查、擷取欄位與分數，然後核准或退件。每次登入、檢視檔案與決策都寫入稽核紀錄 `data/audit/audit.jsonl`（見下方「稽核紀錄」；P2 以前的舊紀錄留在 `data/kyc/review-log.jsonl`）。核准開戶案件＝寫入 L2；核准恢復案件＝以平台備援金鑰發起恢復。
 
 **KYC Credential（規格 §16.3）**：第三方登入要求 `legal_name`、`doc_type`、`nationality`、`pairwise_id` 時，同意畫面向 `/api/kyc/credential` 取得由 KYC 簽章者簽署、綁定網站與這次登入 nonce 的 credential（`src/server/kyc-credential.ts`）。資料來自最新一筆核准案件的擷取欄位。`pairwise_id` 使用 `.env.local` 的 `KYC_PAIRWISE_KEY`（`npm run deploy`／`deploy:server` 會自動產生）；**這把金鑰一旦有網站使用就不能更換**，否則所有網站看到的同一人識別碼都會改變。沒有設定時不提供 `pairwise_id`。
 
-**交易額度只能由管理者調整**：KeyringValidator v2 的 `setLimits` 與排程修改額度一律拒絕（實體卡也不行），只有 `limitAdmin` 能呼叫 `setLimitsFor(account, token, perTx, daily, reason)`，每次調整發出 `LimitsSetByAdmin`。測試網 `limitAdmin`＝部署者（營運錢包），正式環境請以 `transferLimitAdmin`／`acceptLimitAdmin` 移交給多簽。管理後台 `/admin/limits` 與 KYC 複核共用 `KYC_REVIEW_TOKEN` 登入，每次查詢與調整都寫入稽核紀錄。
+**交易額度只能由管理者調整**：KeyringValidator v2 的 `setLimits` 與排程修改額度一律拒絕（實體卡也不行），只有 `limitAdmin` 能呼叫 `setLimitsFor(account, token, perTx, daily, reason)`，每次調整發出 `LimitsSetByAdmin`。測試網 `limitAdmin`＝部署者（營運錢包），正式環境請以 `transferLimitAdmin`／`acceptLimitAdmin` 移交給多簽。管理後台 `/admin/limits` 需要「交易額度」角色，每次查詢與調整都寫入稽核紀錄。
 
 > **已部署的測試網仍是 v1。** v1 的額度寫在使用者帳戶可自行修改的位置，管理者無法調整；目前由 bundler 拒絕贊助任何修改額度的操作（暫時防護，自備 BOLT 直接送交易仍可繞過）。要換成 v2 必須重新部署帳戶相關合約（`npm run deploy`，KeyringValidator 與工廠都會換新），**既有測試網身分的地址會改變、需要重新開戶**。
 
@@ -160,6 +161,15 @@ npm run build
 **鏈上事件索引（規格 §16.6 P0-d）**：伺服器持續同步 TWDC 轉帳、金鑰增減、實名證明狀態、恢復、額度調整與法人帳戶事件（`src/server/indexer.ts`，存在 `data/index/`，可隨時刪除重建）。錢包紀錄、聊天中的轉帳、「以此裝置的 Passkey 登入」反查身分與管理後台都改讀索引，瀏覽器不再從部署區塊掃描整條鏈（Boltchain RPC 的 `eth_getLogs` 每次最多 10,000 個區塊）。每次同步把所有合約合併成一個查詢、每段 ≤ 10,000 區塊，並重掃最後 5 個區塊去重；部署位址改變時自動重建。API：`GET /api/index/transfers?address=&limit=&before=`、`GET /api/index/key-accounts?keyId=`、`GET /api/index/status`（`deploy:server` 會檢查同步落後）。
 
 **工商憑證綁定（P1.5 PoC）**：`/company` 的「以工商憑證綁定」透過使用者電腦上的 HiPKI 跨平台網頁元件（`http://localhost:61161`，`src/lib/hipki.ts`）以 IC 卡簽署 PKCS#7；伺服器 `src/server/moeaca.ts` 驗證簽章、憑證鏈（內建 GRCA／GRCA G3 根與 MOEACA 第二、三代中繼，`src/server/moeaca-anchors.ts`）、效期、金鑰用途、憑證政策 `2.16.886.101.0.3.3` 與分區 CRL，取出統一編號與正卡／附卡。憑證欄位已以 MOEACA 公開下載的真實憑證核對；元件的 postMessage 參數與錯誤碼依公開範例實作，**尚待以實體卡片與讀卡機確認**。可用 `npm run moeaca:inspect -- <憑證.cer>` 檢查一張實體卡的憑證，或 `--sig <PKCS#7> --tbs <內容>` 檢查元件產生的簽章。`MOEACA_TEST_ANCHORS` 只供自動化測試使用測試 PKI，正式環境不得設定。
+
+**管理後台人員（規格 §16.6 P3-A3）**：`/admin` 每位人員一個帳號、以自己的 Passkey 登入（與錢包的 Passkey 分開），稽核紀錄的操作人是「姓名（人員 id）」。
+
+- 第一位管理者：還沒有任何啟用中的管理者時，`/admin` 會要求 `.env.local` 的 `KYC_REVIEW_TOKEN`（部署時自動產生），並在這台裝置建立 Passkey。之後這個密碼就不能再登入。**升級到這一版後，第一位打開 `/admin` 並輸入密碼的人就是管理者，請盡快完成。**
+- 其他人員：管理者在 `/admin/staff` 產生邀請連結（72 小時、一次性），受邀者在自己的裝置建立 Passkey。遺失裝置時由管理者發「新增 Passkey」邀請，或移除舊的 Passkey、停用帳號。
+- 角色：`admin`（人員與依賴方管理）、`kyc`（KYC 與法人複核）、`disclosure`（資料調閱核准）、`limits`（交易額度）、`audit`（稽核紀錄唯讀）。管理者不會自動擁有其他角色；資料調閱需要兩位不同的人員具備 `disclosure`。
+- 伺服器端驗證 WebAuthn：challenge（5 分鐘、一次性）、來源網址（正式模式只接受 `PUBLIC_ORIGIN`）、rpId、使用者驗證旗標與 ES256 簽章。停用與角色調整立即生效。
+
+**正式模式上線閘門（P3-A4）**：`.env.local` 設定 `CAFECA_MODE=production` 後，伺服器啟動與 `deploy:server` 都會檢查，以下任一項存在就拒絕啟動：`KYC_PROTOTYPE_AUTO_APPROVE`、`NEXT_PUBLIC_KYC_SIMULATE`、`MOEACA_TEST_ANCHORS`、`GCIS_COMPANY_URL`、未校準的 `KYC_AUTO_APPROVE`（校準後另設 `KYC_AUTO_CALIBRATED=1`）、非 https 的 `PUBLIC_ORIGIN`。可先執行 `npm run gate` 自行檢查。正式簽章者只會在閘門通過的環境登記。
 
 **依賴方資料調閱（規格 §16.6 P2）**：依賴方（交易所等）平常只拿得到使用者同意提供的 claims；遇到洗錢防制調查或司法機關調閱，才以這個 API 申請 CAFECA 保存的實名資料（`src/server/disclosure.ts`）。
 
