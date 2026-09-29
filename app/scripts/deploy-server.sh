@@ -102,6 +102,12 @@ if [ -z "$(env_get KYC_PAIRWISE_KEY)" ]; then
 else
   ok "KYC_PAIRWISE_KEY 已設定"
 fi
+if [ -z "$(env_get DISCLOSURE_SIGNING_KEY)" ]; then
+  env_set DISCLOSURE_SIGNING_KEY "$(node -e 'const k=require("crypto").generateKeyPairSync("ec",{namedCurve:"P-256"}).privateKey.export({format:"jwk"});console.log(Buffer.from(k.d,"base64url").toString("hex"))')"
+  ok "已產生 DISCLOSURE_SIGNING_KEY（資料調閱資料包的簽章金鑰；更換後依賴方須重新抓取 disclosure.jwks）"
+else
+  ok "DISCLOSURE_SIGNING_KEY 已設定"
+fi
 [ -n "$(env_get MOEACA_TEST_ANCHORS)" ] && warn "MOEACA_TEST_ANCHORS 只限自動化測試（會信任測試 PKI 的工商憑證），正式環境請移除"
 for k in KYC_PROTOTYPE_AUTO_APPROVE NEXT_PUBLIC_KYC_SIMULATE; do
   [ "$(env_get $k)" = "1" ] && warn "$k=1 只限開發，正式環境請移除"

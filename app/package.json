@@ -14,7 +14,8 @@
     "sync-abis": "node scripts/sync-abis.mjs",
     "fetch-models": "node scripts/fetch-models.mjs",
     "postinstall": "node scripts/fetch-models.mjs",
-    "moeaca:inspect": "tsx --conditions react-server scripts/moeaca-inspect.mts"
+    "moeaca:inspect": "tsx --conditions react-server scripts/moeaca-inspect.mts",
+    "rp": "tsx scripts/rp-client.mts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

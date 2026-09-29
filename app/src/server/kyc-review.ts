@@ -1,9 +1,8 @@
 import "server-only";
 import { createHash, timingSafeEqual } from "crypto";
-import { promises as fs } from "fs";
-import path from "path";
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
+import { writeAudit } from "./audit";
 import { env } from "./env";
 import { HttpError } from "./session";
 
@@ -39,9 +38,8 @@ export async function requireReviewer(): Promise<string> {
   }
 }
 
-/** 稽核紀錄（append-only）：登入、檢視檔案、每一筆決策 */
+/** 稽核紀錄：寫入 hash-chained 的 data/audit/audit.jsonl（見 server/audit.ts） */
 export async function audit(e: Record<string, unknown>) {
-  const f = path.join(process.cwd(), "data", "kyc", "review-log.jsonl");
-  await fs.mkdir(path.dirname(f), { recursive: true });
-  await fs.appendFile(f, JSON.stringify({ at: new Date().toISOString(), ...e }) + "\n");
+  const { who, action, ...rest } = e as { who?: string; action?: string };
+  await writeAudit({ who: String(who ?? "system"), action: String(action ?? "unknown"), ...rest });
 }

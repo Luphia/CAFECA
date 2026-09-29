@@ -7,7 +7,7 @@
  * 會驗證：憑證鏈（MOEACA → GRCA，內建）、效期、金鑰用途、憑證政策、CRL；並印出統一編號、公司名稱、正卡／附卡。
  */
 import { readFileSync } from "fs";
-import { inspectMoeacaCert, verifyMoeacaSignature } from "../src/server/moeaca.ts";
+import { inspectMoeacaCert, verifyMoeacaSignature } from "../src/server/moeaca";
 
 const args = process.argv.slice(2);
 const flag = (k: string) => {

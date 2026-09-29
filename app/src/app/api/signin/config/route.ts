@@ -1,6 +1,7 @@
 import { DEPLOYMENT, CHAIN_ID } from "@/lib/config";
 import { CREDENTIAL_CLAIMS, CREDENTIAL_TTL } from "@/lib/kyc-credential";
 import { CLAIMS, SIGNIN_VERSION } from "@/lib/signin";
+import { BASES, FIELDS, disclosureJwks } from "@/server/disclosure";
 
 /**
  * GET /.well-known/cafeca-configuration（next.config rewrite 到這裡）
@@ -41,6 +42,8 @@ export function GET(req: Request) {
       eip712: { name: "CAFECA KYC Credential", version: "1", primaryType: "KycCredential", verifyingContract: DEPLOYMENT.identityRegistry ?? null },
       max_ttl_seconds: CREDENTIAL_TTL,
     },
+    // 依賴方資料調閱（須先向 CAFECA 登記取得 API 金鑰）；資料包以 jwks 驗章
+    disclosure: { endpoint: `${origin}/api/rp/disclosures`, fields: FIELDS, legal_bases: BASES, package: { jwe: { alg: "ECDH-ES", enc: "A256GCM" }, jws: "ES256" }, jwks: disclosureJwks() },
   };
   return Response.json(body, {
     headers: { "access-control-allow-origin": "*", "cache-control": "public, max-age=300" },

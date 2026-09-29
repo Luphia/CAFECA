@@ -69,6 +69,45 @@ export type Store = {
   /** 聊天附件（檔案內容在傳送端就以一次性金鑰加密，伺服器只保存密文；金鑰在端對端加密的訊息裡） */
   chatBlobs?: Record<string, { from: string; to: string; size: number; createdAt: number }>;
   identitySync?: { lastBlock: number; log: { account: string; block: number; action: "reattest" | "suspend" | "skip"; tx?: string; at: number }[] };
+  /** 依賴方（資料調閱 API 的使用者，規格 §16.6 P2）：id → 登記資料；API 金鑰只存 SHA-256 */
+  relyingParties?: Record<string, RelyingParty>;
+  /** 資料調閱申請 */
+  disclosures?: Record<string, Disclosure>;
+};
+
+export type RelyingParty = {
+  id: string;
+  name: string;
+  ubn?: string;
+  /** 與 Sign in with CAFECA 的 domain 相同（origin） */
+  domains: string[];
+  contact: string;
+  keyHash: string;
+  /** 資料包加密用 P-256 公鑰 */
+  encJwk: { kty: string; crv: string; x: string; y: string };
+  createdAt: number;
+  createdBy: string;
+  active: boolean;
+};
+
+export type Disclosure = {
+  id: string;
+  rp: string;
+  account: string;
+  fields: ("legal_name" | "birthday" | "sex" | "doc_type" | "nationality" | "issue_date" | "kyc_history" | "doc_images" | "entity")[];
+  legalBasis: { type: "court" | "prosecutor" | "police" | "aml" | "consent"; ref: string; text: string };
+  caseRef?: string;
+  reason: string;
+  relationship: { type: "signin" | "pairwise" | "none"; detail: string };
+  /** 司法機關要求暫緩通知當事人，到這個時間前使用者看不到 */
+  noticeDeferredUntil?: number;
+  status: "consent" | "review" | "approved1" | "released" | "rejected";
+  consent?: { status: "pending" | "granted" | "denied"; at?: number; signature?: string };
+  /** [0] 第一位核准，[1] 第二位放行（不同人） */
+  approvals: { who: string; at: number; fields: Disclosure["fields"]; note?: string }[];
+  rejection?: { by: string; at: number; reason: string };
+  release?: { at: number; by: string; expiresAt: number; fetched: number[] };
+  createdAt: number;
 };
 
 export type GcisCompany = {

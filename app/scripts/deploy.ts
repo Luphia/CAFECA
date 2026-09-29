@@ -78,6 +78,8 @@ async function main() {
     KYC_REVIEW_TOKEN: () => toHex(crypto.getRandomValues(new Uint8Array(16))).slice(2),
     // K_pairwise：KYC Credential 的 pairwise_id（§16.3），與 SESSION_SECRET 衍生的 kycIdHash 金鑰分開
     KYC_PAIRWISE_KEY: () => toHex(crypto.getRandomValues(new Uint8Array(32))).slice(2),
+    // 資料調閱資料包的 ES256 簽章金鑰（P-256 私鑰 hex；公鑰公布在 /.well-known/cafeca-configuration 的 disclosure.jwks）
+    DISCLOSURE_SIGNING_KEY: () => Buffer.from(p256.utils.randomPrivateKey()).toString("hex"),
   };
   let appended = "";
   for (const [k, fn] of Object.entries(gen)) {
