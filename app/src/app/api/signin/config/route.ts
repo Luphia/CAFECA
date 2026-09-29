@@ -1,4 +1,5 @@
 import { DEPLOYMENT, CHAIN_ID } from "@/lib/config";
+import { CREDENTIAL_CLAIMS, CREDENTIAL_TTL } from "@/lib/kyc-credential";
 import { CLAIMS, SIGNIN_VERSION } from "@/lib/signin";
 
 /**
@@ -35,6 +36,11 @@ export function GET(req: Request) {
       ? { factory: DEPLOYMENT.factory, keyring: DEPLOYMENT.keyring, attestation: DEPLOYMENT.attestation, recovery: DEPLOYMENT.recovery, twdc: DEPLOYMENT.twdc, entryPoint: DEPLOYMENT.entryPoint, identityRegistry: DEPLOYMENT.identityRegistry ?? null }
       : null,
     eip712: { name: "CAFECA Sign-In", version: "1", primaryType: "SignIn", verifyingContract: "<account>" },
+    kyc_credential: {
+      claims: CREDENTIAL_CLAIMS,
+      eip712: { name: "CAFECA KYC Credential", version: "1", primaryType: "KycCredential", verifyingContract: DEPLOYMENT.identityRegistry ?? null },
+      max_ttl_seconds: CREDENTIAL_TTL,
+    },
   };
   return Response.json(body, {
     headers: { "access-control-allow-origin": "*", "cache-control": "public, max-age=300" },

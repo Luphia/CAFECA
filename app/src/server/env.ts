@@ -24,6 +24,8 @@ export const env = {
   guardianSeed: () => req("GUARDIAN_SEED") as Hex,
   sessionSecret: () => req("SESSION_SECRET"),
   kycRecordSecret: () => req("SESSION_SECRET") + ":kyc-record",
+  /** K_pairwise：pairwise_id 的 HMAC 金鑰（§16.3），與 kycRecordSecret 分開；未設定時不提供 pairwise_id */
+  pairwiseKey: () => process.env.KYC_PAIRWISE_KEY ?? "",
   /** KYC 人工複核後台（/admin/kyc）的登入密碼；未設定時後台停用 */
   kycReviewToken: () => process.env.KYC_REVIEW_TOKEN ?? "",
 };

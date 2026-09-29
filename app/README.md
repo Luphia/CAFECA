@@ -143,6 +143,8 @@ npm run build
 
 **人工複核後台 `/admin/kyc`**：以 `.env.local` 的 `KYC_REVIEW_TOKEN`（`npm run deploy` 會自動產生）登入並填寫複核人姓名。可以看到浮水印版證件、臉部影片、每項檢查、擷取欄位與分數，然後核准或退件。每次登入、檢視檔案與決策都寫入 `data/kyc/review-log.jsonl`。核准開戶案件＝寫入 L2；核准恢復案件＝以平台備援金鑰發起恢復。
 
+**KYC Credential（規格 §16.3）**：第三方登入要求 `legal_name`、`doc_type`、`nationality`、`pairwise_id` 時，同意畫面向 `/api/kyc/credential` 取得由 KYC 簽章者簽署、綁定網站與這次登入 nonce 的 credential（`src/server/kyc-credential.ts`）。資料來自最新一筆核准案件的擷取欄位。`pairwise_id` 使用 `.env.local` 的 `KYC_PAIRWISE_KEY`（`npm run deploy`／`deploy:server` 會自動產生）；**這把金鑰一旦有網站使用就不能更換**，否則所有網站看到的同一人識別碼都會改變。沒有設定時不提供 `pairwise_id`。
+
 **伺服器需求**
 
 - 系統要有 `ffmpeg`（或以 `FFMPEG_PATH` 指定），用來解碼臉部影片與音訊。

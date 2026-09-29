@@ -73,6 +73,8 @@ async function main() {
     SESSION_SECRET: () => toHex(crypto.getRandomValues(new Uint8Array(32))),
     // KYC 人工複核後台（/admin/kyc）的登入密碼
     KYC_REVIEW_TOKEN: () => toHex(crypto.getRandomValues(new Uint8Array(16))).slice(2),
+    // K_pairwise：KYC Credential 的 pairwise_id（§16.3），與 SESSION_SECRET 衍生的 kycIdHash 金鑰分開
+    KYC_PAIRWISE_KEY: () => toHex(crypto.getRandomValues(new Uint8Array(32))).slice(2),
   };
   let appended = "";
   for (const [k, fn] of Object.entries(gen)) {

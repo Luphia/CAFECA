@@ -14,7 +14,7 @@
   "use strict";
 
   var VERSION = 1;
-  var CLAIMS = ["kyc_level", "handle"];
+  var CLAIMS = ["kyc_level", "handle", "legal_name", "doc_type", "nationality", "pairwise_id"];
   var DEFAULT_TTL = 300;
   var REQUEST_TTL = 300;
   var enc = new TextEncoder();

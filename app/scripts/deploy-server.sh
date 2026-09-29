@@ -95,6 +95,12 @@ if [ -z "$(env_get KYC_REVIEW_TOKEN)" ]; then
 else
   ok "KYC_REVIEW_TOKEN 已設定"
 fi
+if [ -z "$(env_get KYC_PAIRWISE_KEY)" ]; then
+  env_set KYC_PAIRWISE_KEY "$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+  ok "已產生 KYC_PAIRWISE_KEY（pairwise_id 的 HMAC 金鑰；一旦使用就不可更換，否則依賴方看到的同一人識別碼會全部改變）"
+else
+  ok "KYC_PAIRWISE_KEY 已設定"
+fi
 for k in KYC_PROTOTYPE_AUTO_APPROVE NEXT_PUBLIC_KYC_SIMULATE; do
   [ "$(env_get $k)" = "1" ] && warn "$k=1 只限開發，正式環境請移除"
 done

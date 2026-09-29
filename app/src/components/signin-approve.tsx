@@ -7,6 +7,7 @@ import { encode1271 } from "@/lib/userop";
 import { signWithPasskey } from "@/lib/webauthn";
 import { findSignIn, recordSignIn, subscribeSignIns } from "@/lib/signin-history";
 import { newChannel, storeChannel } from "@/lib/channel-store";
+import { CREDENTIAL_CLAIMS, DOC_TYPE_LABEL, type CredentialClaim, type DocType, type KycCredential } from "@/lib/kyc-credential";
 import {
   channelString,
   claimsString,
@@ -25,7 +26,20 @@ import { Badge, Button, Notice, Switch, cx, errMsg, short } from "./ui";
 
 type SiteMeta = { name?: string; icon?: string };
 
-const CLAIM_LABEL: Record<Claim, string> = { kyc_level: "實名驗證等級", handle: "CAFECA 代稱" };
+const CLAIM_LABEL: Record<Claim, string> = {
+  kyc_level: "實名驗證等級",
+  handle: "CAFECA 代稱",
+  legal_name: "證件姓名",
+  doc_type: "證件類型",
+  nationality: "國籍",
+  pairwise_id: "同一人識別碼",
+};
+
+const isCred = (c: string): c is CredentialClaim => (CREDENTIAL_CLAIMS as readonly string[]).includes(c);
+
+type Available = { active: boolean; legal_name: string | null; doc_type: DocType | null; nationality: string | null; pairwise_id: boolean };
+
+const NATION: Record<string, string> = { TW: "中華民國（臺灣）" };
 
 /**
  * 網站自己宣告的名稱與圖示：https://<domain>/.well-known/cafeca-site.json（需開放 CORS）。
@@ -112,10 +126,30 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
     () => !findSignIn(w.address, request.domain),
     () => false,
   );
+  // 實名等級與代稱預設提供；姓名、證件類型、國籍、同一人識別碼屬於個人資料，預設關閉，由使用者逐項開啟
   const [grant, setGrant] = useState<Record<Claim, boolean>>(() => ({
     kyc_level: request.claims?.includes("kyc_level") ?? false,
     handle: request.claims?.includes("handle") ?? false,
+    legal_name: false,
+    doc_type: false,
+    nationality: false,
+    pairwise_id: false,
   }));
+  const wantsCred = !!request.claims?.some(isCred);
+  const [avail, setAvail] = useState<Available | null>(null);
+  useEffect(() => {
+    if (!wantsCred) return;
+    api<Available>("/api/kyc/credential")
+      .then(setAvail)
+      .catch(() => setAvail({ active: false, legal_name: null, doc_type: null, nationality: null, pairwise_id: false }));
+  }, [wantsCred, w.address]);
+  const credValue = (c: CredentialClaim): string | null => {
+    if (!avail?.active) return null;
+    if (c === "legal_name") return avail.legal_name;
+    if (c === "doc_type") return avail.doc_type ? DOC_TYPE_LABEL[avail.doc_type] : null;
+    if (c === "nationality") return avail.nationality ? `${avail.nationality} ${NATION[avail.nationality] ?? ""}`.trim() : null;
+    return avail.pairwise_id ? "只給這個網站、無法跨站比對" : null;
+  };
   const [allowChannel, setAllowChannel] = useState(!!request.channel);
   const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,7 +164,17 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
     setError(null);
     try {
       if (!chain.deployed && chain.loaded) throw new Error("身分合約尚未部署，無法簽署登入");
-      const granted = (Object.keys(grant) as Claim[]).filter((c) => grant[c] && request.claims?.includes(c));
+      let granted = (Object.keys(grant) as Claim[]).filter((c) => grant[c] && request.claims?.includes(c));
+      // 個人資料由 KYC 簽章者簽成 credential（綁定這個網站與這次登入的 nonce）；沒有資料的項目不列入同意範圍
+      let credential: KycCredential | null = null;
+      const credWanted = granted.filter(isCred);
+      if (credWanted.length) {
+        credential = (
+          await api<{ credential: KycCredential | null }>("/api/kyc/credential", { audience: request.domain, nonce: request.nonce, claims: credWanted })
+        ).credential;
+        const disclosed = credential?.message.disclosed.split(",") ?? [];
+        granted = granted.filter((c) => !isCred(c) || disclosed.includes(c));
+      }
       // 簽章通道：錢包產生自己的通道金鑰，通道 id 與雙方公鑰一起寫進登入簽章
       const ch =
         request.channel && allowChannel
@@ -158,6 +202,7 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
         claims: granted.includes("handle") ? { handle } : {},
         state: request.state,
         ...(ch ? { channel: { id: ch.id, walletPub: ch.walletPub, expiresAt: ch.expiresAt } } : {}),
+        ...(credential ? { credential } : {}),
       };
       if (ch) storeChannel(ch); // 簽署完成才保存；redirect 模式會立刻離開頁面，所以要在送出前存好
       recordSignIn(w.address, request.domain, message.claims, meta?.name);
@@ -225,24 +270,40 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
 
       {!!request.claims?.length && (
         <div className="space-y-2">
-          <div className="text-xs font-medium text-ink-3">網站要求提供（可關閉）</div>
-          {request.claims.map((c) => (
-            <div key={c} className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2.5 text-sm">
-              <span className="min-w-0">
-                {CLAIM_LABEL[c]}
-                <span className="ml-2 text-xs text-ink-3">
-                  {c === "kyc_level" ? (chain.level >= 2 ? "L2 已實名" : chain.level === 1 ? "L1" : "未實名") : handle ? `@${handle}` : "尚未設定"}
+          <div className="text-xs font-medium text-ink-3">網站要求提供（逐項選擇）</div>
+          {request.claims.map((c) => {
+            const cred = isCred(c);
+            const value = cred ? credValue(c) : null;
+            const off = cred && !value;
+            return (
+              <div key={c} className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2.5 text-sm">
+                <span className="min-w-0">
+                  {CLAIM_LABEL[c]}
+                  <span className="ml-2 text-xs text-ink-3" data-testid={`claim-value-${c}`}>
+                    {c === "kyc_level"
+                      ? chain.level >= 2 ? "L2 已實名" : chain.level === 1 ? "L1" : "未實名"
+                      : c === "handle"
+                        ? handle ? `@${handle}` : "尚未設定"
+                        : !avail
+                          ? "讀取中…"
+                          : value ?? (avail.active ? "沒有資料" : "需要有效的 L2 實名")}
+                  </span>
                 </span>
-              </span>
-              <Switch
-                checked={grant[c]}
-                onChange={(v) => setGrant((g) => ({ ...g, [c]: v }))}
-                label={`提供${CLAIM_LABEL[c]}`}
-                testId={`claim-${c}`}
-              />
-            </div>
-          ))}
-          <p className="text-[11px] text-ink-3">實名等級由網站直接向鏈上查詢，不會提供姓名、生日或證號。</p>
+                <Switch
+                  checked={grant[c] && !off}
+                  disabled={off}
+                  onChange={(v) => setGrant((g) => ({ ...g, [c]: v }))}
+                  label={`提供${CLAIM_LABEL[c]}`}
+                  testId={`claim-${c}`}
+                />
+              </div>
+            );
+          })}
+          <p className="text-[11px] text-ink-3">
+            {wantsCred
+              ? "實名等級由網站向鏈上查詢。姓名、證件類型、國籍與同一人識別碼預設不提供，開啟的項目會由 CAFECA 簽章後交給這個網站，只能用在這次登入；生日、證號與住址一律不提供。"
+              : "實名等級由網站直接向鏈上查詢，不會提供姓名、生日或證號。"}
+          </p>
         </div>
       )}
 

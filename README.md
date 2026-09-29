@@ -39,7 +39,7 @@
     const response = await cafeca.signIn({
       nonce: () => fetch("/api/cafeca/nonce", { method: "POST" }).then((r) => r.json()).then((j) => j.nonce),
       statement: "登入 Example Shop",          // 選填，顯示給使用者看，最多 200 字
-      claims: ["kyc_level", "handle"],          // 選填，使用者可以逐項取消
+      claims: ["kyc_level", "handle"],          // 選填，使用者可以逐項取消；姓名等實名資料見第 9 節
     });
     // 把 response 原封不動交給後端驗證（前端拿到的結果不可信任）
     await fetch("/api/cafeca/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(response) });
@@ -81,6 +81,7 @@ app.post("/api/cafeca/login", async (req, res) => {
     // user.claims.kyc_level：鏈上有效實名等級（0 未實名、2 已通過證件＋臉部驗證；撤銷、暫停、過期都是 0）
     // user.claims.kyc：IdentityRegistry v2 的完整狀態（主體類型、狀態、簽章者等級…，見第 9 節）
     // user.claims.handle：CAFECA 代稱（由錢包查詢確認；handleVerified=false 時只能拿來顯示）
+    // user.claims.legal_name／doc_type／nationality／pairwise_id：要求時才有，來自 KYC Credential（第 9 節），已驗證簽章
     // user.recoveryPending：身分正在恢復中，建議暫停敏感操作
     req.session.userId = user.account;
     res.json(user);
@@ -122,7 +123,7 @@ app.post("/api/cafeca/login", async (req, res) => {
 | `redirectUri` | redirect | 與 `domain` 同源 |
 | `responseUri` | post | 與 `domain` 同源 |
 | `statement` |  | 最多 200 字 |
-| `claims` |  | `kyc_level`、`handle` |
+| `claims` |  | `kyc_level`、`handle`、`legal_name`、`doc_type`、`nationality`、`pairwise_id`（後四項見第 9 節） |
 | `state` |  | 原樣帶回 |
 | `channel` |  | `{ "pub": "<P-256 公鑰 base64url>", "ttl": 秒 }`：要求開啟簽章通道（見第 8 節），`ttl` 最長 30 天 |
 
@@ -139,7 +140,8 @@ app.post("/api/cafeca/login", async (req, res) => {
   "signature": "0x…",
   "claims": { "handle": "…" },
   "state": "…",
-  "channel": { "id": "…", "walletPub": "…", "expiresAt": 0 }
+  "channel": { "id": "…", "walletPub": "…", "expiresAt": 0 },
+  "credential": { "message": { "account": "0x…", "audience": "…", "nonce": "…", "…": "…" }, "signature": "0x…" }
 }
 ```
 
@@ -165,6 +167,7 @@ SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 ex
 5. 若含 `handle`：呼叫 `GET https://<錢包網域>/api/profile?q=<account>` 取得代稱。代稱存在 CAFECA 伺服器，不上鏈；回應裡自稱的 `claims.handle` 不可信任。
 6. 可選：呼叫 `recovery.isPending(account)`，檢查身分是否正在恢復中。
 7. 若 `message.channel` 不是空字串：確認其中的網站公鑰是你自己產生的（`verify(…, { channelPub })`），到期時間不超過登入時間加 30 天。
+8. 若 `claims` 含 `legal_name`、`doc_type`、`nationality`、`pairwise_id` 其中之一：依第 9 節驗證 `credential`。使用者同意但錢包沒有資料時，回應裡不會有對應欄位。
 
 合約位址見 `/.well-known/cafeca-configuration` 的 `contracts`。
 
@@ -414,6 +417,48 @@ SignerSet(address indexed signer, uint8 signerClass)   // 0 NONE、1 PROTOTYPE�
 - 以平台備援金鑰恢復時，使用者已在新裝置重新即時拍證件＋錄活體影像，後台確認是同一人。恢復執行後，CAFECA 以這次重新驗證**重新簽發**證明（nonce 遞增，發出新的 `Attested`）。
 - 找不到有效的重新驗證時，證明會被**暫停**（`Suspended`，原因碼 5），直到使用者重新驗證。
 - 依賴方也可以直接監聽 `RecoveryValidator.RecoveryExecuted(address indexed account, bytes32 newKeyId)`，自行決定是否暫停帳戶。
+
+#### 可驗證的實名資料（KYC Credential）
+
+需要姓名、證件類型、國籍，或需要辨識「是不是同一個人」的網站，在登入請求的 `claims` 加上：
+
+| claim | 內容 | 說明 |
+| --- | --- | --- |
+| `legal_name` | 證件上的姓名 | 後台 OCR 擷取、經自動或人工核准；使用者無法自行填寫 |
+| `doc_type` | `national_id`／`resident_permit`／`passport` | 目前支援國民身分證與居留證 |
+| `nationality` | ISO 3166-1 alpha-2，例 `TW` | 國民身分證為 `TW`；居留證暫不提供 |
+| `pairwise_id` | `bytes32` 同一人識別碼 | `HMAC(K_pairwise, kycIdHash ‖ audience)`：同一個人在你的網站永遠相同（換帳戶、恢復後也相同），不同網站之間無法串連，也推不回證號 |
+
+```js
+cafeca.signIn({ nonce, claims: ["kyc_level", "legal_name", "pairwise_id"] });
+// 後端 cafeca.verify(...) 之後：
+// user.claims.legal_name    "陳大文"（使用者沒有開啟時為 null）
+// user.claims.pairwise_id   "0x…"（一人多帳戶偵測、黑名單比對用這個，不要用 account）
+// user.claims.credential    { signer, signerClass, attestationNonce, issuedAt }（存查用）
+```
+
+- 同意畫面會顯示每一項實際要給出去的內容，**預設全部關閉**，使用者逐項開啟。生日、證號、住址一律不提供。
+- 錢包以 KYC 簽章者（與 v2 attestation 同一把）簽出 credential，只放使用者開啟的項目。
+
+**Credential 格式（EIP-712）**
+
+```
+domain        = { name: "CAFECA KYC Credential", version: "1", chainId, verifyingContract: identityRegistry }
+KycCredential = (address account, string audience, string nonce, uint64 attestationNonce, uint256 issuedAt, uint256 expiresAt,
+                 string legalName, string docType, string nationality, bytes32 pairwiseId, string disclosed)
+```
+
+`disclosed` 是這份 credential 揭露的 claims（排序、逗號分隔）；沒有揭露的欄位為空字串，`pairwiseId` 為 0。簽章是一般的 65 bytes secp256k1 簽章（不是 ERC-1271）。
+
+**驗證步驟**（`cafeca.verify` 已內建；其他語言自行實作）：
+
+1. `account`＝登入帳戶，`audience`＝你的 origin，`nonce`＝這次登入的 nonce；現在時間在 `issuedAt`～`expiresAt` 之間（最長 10 分鐘）。
+2. `disclosed` 的每一項都必須在 `message.claims` 裡（使用者以 Passkey 簽署的同意範圍）。
+3. `recoverTypedDataAddress(...)` 得到的地址＝`identityRegistry.statusOf(account).signer`，而且該簽章者等級不是 `NONE`。
+4. `statusOf(account)` 為 `ACTIVE`、`effectiveLevel ≥ 2`，而且 `nonce`＝`attestationNonce`。證明之後被暫停、撤銷或重新簽發，舊的 credential 就不再有效。
+5. 正式實名要求 `signerClass == PRODUCTION`（目前都是 `PROTOTYPE`）。
+
+credential 不上鏈，驗證也不經過 CAFECA 伺服器。它只證明「登入當下」的內容；要持續追蹤狀態，請鏡像第 9 節的事件。
 
 **舊版 AttestationRegistry（v1）**：只保留給 CAFECA 內部的綁卡門檻使用。v1 沒有 nonce、不能撤銷，而且**舊簽章可以被任何人重送**（撤銷後重送就會恢復成 L2），依賴方不應再讀 v1。
 
