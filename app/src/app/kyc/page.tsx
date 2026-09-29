@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { DEPLOYMENT, IdentityStatus } from "@/lib/config";
 import { recoveryValidatorAbi } from "@/lib/contracts/abis";
@@ -12,9 +12,10 @@ import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
 import { KycCapture, postKyc, type KycEvidence } from "@/components/kyc-capture";
 import { useWallet } from "@/components/wallet-provider";
-import { Badge, Button, Notice, Panel, TxLink, errMsg, short, useToast } from "@/components/ui";
+import { Badge, Button, Notice, Panel, Spinner, TxLink, errMsg, short, useToast } from "@/components/ui";
 
 type Guardian = { address: Address; authoritySig: Hex };
+type KycView = { caseId: string; status: "pending" | "processing" | "approved" | "review" | "rejected"; reasons: string[]; result: { txHash?: string; error?: string } | null };
 
 export default function KycPage() {
   return (
@@ -41,22 +42,47 @@ function KycBody() {
     return res.txHash;
   };
 
+  const [pending, setPending] = useState<KycView | null>(null);
+
+  // 重新整理頁面時，顯示最近一次送出的案件狀態
+  useEffect(() => {
+    api<KycView>("/api/kyc").then((v) => ["pending", "processing", "review", "rejected"].includes(v.status) && setPending(v)).catch(() => undefined);
+  }, []);
+
+  /** 後台驗證約需 10–60 秒：輪詢到有結果（通過時等鏈上寫入完成）為止 */
+  const waitResult = async (caseId: string): Promise<KycView & { guardian: Guardian | null }> => {
+    for (let i = 0; i < 150; i++) {
+      const v = await api<KycView & { guardian: Guardian | null }>(`/api/kyc?case=${caseId}`);
+      setPending(v);
+      const done = v.status === "review" || v.status === "rejected" || (v.status === "approved" && (v.result?.txHash || v.result?.error));
+      if (done) return v;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    throw new Error("驗證時間較長，完成後會通知你；可以稍後回到這個頁面查看");
+  };
+
   const submit = async () => {
     if (!ev) return;
     setBusy("submit");
     try {
-      const r = await postKyc<{ status: string; txHash?: Hex; guardian: Guardian | null }>("/api/kyc", ev);
-      if (r.status !== "approved" || !r.txHash) {
-        toast(r.status === "review" ? "已送出，需要人工複核，完成後會通知你" : "驗證未通過，請重新拍攝", r.status === "review" ? "neutral" : "danger");
+      const sent = await postKyc<KycView>("/api/kyc", ev);
+      setPending(sent);
+      const r = await waitResult(sent.caseId);
+      if (r.status !== "approved" || !r.result?.txHash) {
+        toast(
+          r.status === "review" ? "已送出，需要人工複核，完成後會通知你" : r.status === "rejected" ? `驗證未通過：${r.reasons[0] ?? "請重新拍攝"}` : `鏈上寫入失敗：${r.result?.error ?? "請稍後再試"}`,
+          r.status === "review" ? "neutral" : "danger",
+        );
         return;
       }
-      toast(<span>實名驗證通過（L2） <TxLink hash={r.txHash} /></span>, "ok");
+      setPending(null);
+      toast(<span>實名驗證通過（L2） <TxLink hash={r.result.txHash as Hex} /></span>, "ok");
       let guardianTx: Hex | undefined;
       if (r.guardian) {
         guardianTx = await installGuardian(r.guardian);
         toast(<span>平台備援金鑰已啟用 <TxLink hash={guardianTx} /></span>, "ok");
       }
-      setDone({ kycTx: r.txHash, guardianTx });
+      setDone({ kycTx: r.result.txHash as Hex, guardianTx });
       await refresh();
     } catch (e) {
       toast(errMsg(e), "danger");
@@ -133,6 +159,14 @@ function KycBody() {
           <li>可以購買 CAFECA 實體卡</li>
         </ul>
       </Panel>
+
+      {pending && (pending.status === "pending" || pending.status === "processing") && (
+        <Notice>
+          <span className="inline-flex items-center gap-2" data-testid="kyc-processing"><Spinner className="text-brand" /> 後台正在驗證你的證件與臉部影像（約 10–60 秒）…</span>
+        </Notice>
+      )}
+      {pending?.status === "review" && <Notice tone="warn">你送出的資料需要人工複核，完成後就會生效，不需要重新送出。</Notice>}
+      {pending?.status === "rejected" && <Notice tone="danger">上一次驗證未通過：{pending.reasons.join("；") || "請重新拍攝"}。</Notice>}
 
       <Panel title="證件與臉部影像" action={<Badge tone="warn">測試網</Badge>}>
         <p className="mb-4 text-xs text-ink-3">不需要輸入任何資料：姓名、生日與身分證字號會由系統從證件自動辨識。只能用相機即時拍攝，不能選擇相簿裡的照片。</p>

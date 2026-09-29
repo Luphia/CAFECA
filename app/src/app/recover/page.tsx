@@ -16,7 +16,8 @@ import { Badge, Button, Notice, Panel, TxLink, errMsg, short, useToast } from "@
 import { AddressInput } from "@/components/address-input";
 
 type Info = { master: boolean; level: number; guardian: boolean; pending: { readyAt: number } | null; hasCard: boolean };
-type PendingLocal = { address: Address; passkey: PasskeyInfo };
+type PendingLocal = { address: Address; passkey: PasskeyInfo; caseId?: string };
+type RecoveryView = { caseId: string; status: string; reasons: string[]; result: { recoveryTx?: string; readyAt?: number; error?: string } | null };
 const PK = "cafeca.recovery.pending.v1";
 
 export default function RecoverPage() {
@@ -41,6 +42,11 @@ function Recover() {
   const [ev, setEv] = useState<KycEvidence | null>(null);
   const onEvidence = useCallback((e: KycEvidence | null) => setEv(e), []);
   const [local, setLocal] = useState<PendingLocal | null>(null);
+  const [review, setReview] = useState<RecoveryView | null>(null);
+  useEffect(() => {
+    if (!local?.caseId) return;
+    api<RecoveryView>(`/api/recovery/guardian?account=${local.address}&case=${local.caseId}`).then(setReview).catch(() => undefined);
+  }, [local]);
   const [now, setNow] = useState(0);
 
   useEffect(() => {
@@ -113,22 +119,40 @@ function Recover() {
     }
   };
 
-  /** 裝置與卡片都遺失：重新拍證件、錄臉部影像，平台備援金鑰發起恢復（48 小時；已綁卡 7 天） */
+  /** 查詢恢復案件；後台驗證約 10–60 秒，需要人工複核時會停在 review */
+  const pollRecovery = async (rec: PendingLocal, rounds = 90): Promise<RecoveryView> => {
+    let v: RecoveryView = { caseId: rec.caseId!, status: "pending", reasons: [], result: null };
+    for (let i = 0; i < rounds; i++) {
+      v = await api<RecoveryView>(`/api/recovery/guardian?account=${rec.address}&case=${rec.caseId}`);
+      setReview(v);
+      const done = v.status === "review" || v.status === "rejected" || (v.status === "approved" && (v.result?.recoveryTx || v.result?.error));
+      if (done) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (v.status === "approved" && v.result?.recoveryTx) {
+      setDone({ tx: v.result.recoveryTx as Hex, immediate: false, readyAt: v.result.readyAt });
+      await loadInfo(rec.address);
+    } else if (v.status === "review") toast("已送出，需要人工複核；核准後就會自動發起恢復", "neutral");
+    else if (v.status === "rejected") toast(`驗證未通過：${v.reasons[0] ?? "請重新拍攝"}`, "danger");
+    else if (v.result?.error) toast(`恢復請求執行失敗：${v.result.error}`, "danger");
+    return v;
+  };
+
+  /** 裝置與卡片都遺失：重新拍證件、錄臉部影像，後台確認是同一人後由平台備援金鑰發起恢復（48 小時；已綁卡 7 天） */
   const recoverWithGuardian = async () => {
     if (!address || !pk || !ev) return;
     setBusy("kyc");
     try {
-      const r = await postKyc<{ txHash: Hex; readyAt: number }>("/api/recovery/guardian", ev, {
+      const r = await postKyc<RecoveryView>("/api/recovery/guardian", ev, {
         account: address,
         qx: pk.qx,
         qy: pk.qy,
         rpIdHash: pk.rpIdHash,
       });
-      const rec: PendingLocal = { address, passkey: pk };
+      const rec: PendingLocal = { address, passkey: pk, caseId: r.caseId };
       localStorage.setItem(PK, JSON.stringify(rec));
       setLocal(rec);
-      setDone({ tx: r.txHash, immediate: false, readyAt: r.readyAt });
-      await loadInfo(address);
+      await pollRecovery(rec);
     } catch (e) {
       toast(errMsg(e), "danger");
     } finally {
@@ -167,7 +191,20 @@ function Recover() {
         </p>
       </div>
 
-      {local && !done && (
+      {local && !done && local.caseId && review && review.status !== "approved" && (
+        <Panel title="恢復請求審核中" action={<Badge tone={review.status === "rejected" ? "danger" : "warn"}>{review.status === "rejected" ? "未通過" : review.status === "review" ? "人工複核" : "驗證中"}</Badge>}>
+          <p className="mb-3 text-sm text-ink-2" data-testid="recover-review">
+            {review.status === "rejected"
+              ? `驗證未通過：${review.reasons.join("；") || "請重新拍攝"}`
+              : review.status === "review"
+                ? "你送出的證件與臉部影像需要人工複核。核准後平台會自動發起恢復，時間鎖從那時開始計算。"
+                : "後台正在驗證你的證件與臉部影像…"}
+          </p>
+          <Button className="w-full" variant="secondary" onClick={() => pollRecovery(local, 1)} busy={busy === "poll"}>重新查詢</Button>
+        </Panel>
+      )}
+
+      {local && !done && (!local.caseId || review?.status === "approved" || info?.pending) && (
         <Panel title="進行中的恢復" action={<Badge tone="warn">等待時間鎖</Badge>}>
           <p className="mb-3 text-sm text-ink-2">身分 {short(local.address)} 的恢復請求已送出。時間鎖到期（48 小時；已綁卡 7 天）後按下執行，即可用這台裝置的新金鑰操作。</p>
           <Button className="w-full" onClick={() => execute(local)} busy={busy === "exec"}>執行恢復</Button>

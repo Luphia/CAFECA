@@ -9,22 +9,26 @@
     "demo:signin": "tsx examples/signin-demo/server.ts",
     "lint": "eslint",
     "deploy": "tsx scripts/deploy.ts",
+    "deploy:server": "bash scripts/deploy-server.sh",
     "typecheck": "tsc --noEmit",
     "sync-abis": "node scripts/sync-abis.mjs",
     "fetch-models": "node scripts/fetch-models.mjs",
     "postinstall": "node scripts/fetch-models.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "@mediapipe/tasks-vision": "^1.0.1",
     "@noble/curves": "^1.9.1",
     "@noble/hashes": "^1.8.0",
     "jose": "^6.2.12",
     "jsqr": "^1.4.0",
     "next": "16.3.6",
+    "onnxruntime-node": "^1.30.0",
     "qrcode": "^1.5.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "^0.0.1",
+    "sharp": "^0.35.5",
     "viem": "^2.56.9"
   },
   "devDependencies": {

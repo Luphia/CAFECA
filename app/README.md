@@ -27,6 +27,30 @@ npm run demo:signin   # 選用：第三方登入範例網站 http://localhost:10
 
 Passkey 需要安全環境：本機請用 `http://localhost:10002`，其他網域須為 https。
 
+## 伺服器部署（cafeca.io）
+
+在伺服器的 `app` 目錄執行一個指令即可（可重複執行，已完成的步驟會略過）：
+
+```bash
+PUBLIC_ORIGIN=https://cafeca.io npm run deploy:server
+```
+
+依序完成：
+
+1. 安裝 `ffmpeg`（apt／dnf／yum／apk／brew，需要 sudo）
+2. `git pull --ff-only`
+3. `npm install`（含 MediaPipe 與 KYC 模型，約 140 MB，需能連 huggingface.co）
+4. `.env.local`：寫入 `PUBLIC_ORIGIN`；沒有 `KYC_REVIEW_TOKEN` 就產生一組；提醒開發用旗標
+5. 尚未部署 IdentityRegistry v2 時執行 `npm run deploy -- --identity`（部署者需約 6.5 BOLT）
+6. `npm run build`（合約地址在建置時寫入）
+7. 重新啟動：有 pm2 用 `pm2 restart cafeca`（沒有就 `pm2 start npm --name cafeca -- start`），或 `SYSTEMD_UNIT=<服務名>` 改用 systemctl
+8. crontab 每 5 分鐘呼叫 `POST /api/identity/sync`
+9. 檢查 `/.well-known/cafeca-configuration` 的 `issuer`、`chain.rpc`、`contracts.identityRegistry`
+
+選項：`SKIP_PULL=1`、`SKIP_IDENTITY=1`、`SKIP_CRON=1`、`PM2_NAME=<名稱>`、`SYSTEMD_UNIT=<服務>`、`PORT=<npm start 的埠，預設 10002>`。
+
+第一次部署（還沒有 `.env.local`）請先照上面「啟動」執行 `npm run deploy` 產生金鑰並部署合約。
+
 ## 功能對照
 
 | 頁面 | 功能 | 規格章節 |
@@ -78,10 +102,10 @@ Boltchain 測試網：EntryPoint v0.8 ＋ CAFECA 合約（../contracts）
 | 身分建立防濫用 | 每 IP 每日 10 個身分（`MAX_IDENTITIES_PER_IP_PER_DAY`） | 裝置認證（App Attest／Play Integrity）＋Redis |
 | CAFECA 卡 | 瀏覽器卡片模擬器 | 實體卡（安全晶片驅動電子紙） |
 | KYC 擷取 | 證件即時拍攝（引導框偵測、自動拍攝、裝置端浮水印）＋6 動作活體（MediaPipe 臉部特徵點）；上傳只有浮水印版 | 同左，並加原生 App 裝置認證 |
-| KYC 後台 | `src/server/kyc-pipeline.ts` 只做結構檢查後放行（`KYC_PROTOTYPE_AUTO_APPROVE=0` 可改為全部轉人工） | 團隊自建：OCR、活體重檢、人臉比對、翻拍偵測（規格 §14.6） |
+| KYC 後台 | 自建驗證已接上（OCR、活體重檢、語音、人臉比對、證號重複）；自動通過預設關閉，全部轉人工複核 `/admin/kyc` | 以真實樣本校準門檻後開啟 `KYC_AUTO_APPROVE=1`；補翻拍／深偽分類器、ISO 30107-3 送測、領補換查詢 |
 | 平台備援金鑰 | 由 `GUARDIAN_SEED`＋帳戶地址衍生 | 每帳戶於 HSM 內產生、不可匯出，簽署需雙人覆核 |
 | 平台根金鑰 | `.env.local` 的 `GUARDIAN_ROOT_KEY` | 離線冷儲存（多簽） |
-| 重新 KYC 恢復 | 新裝置重新即時拍證件＋6 動作活體；同一人比對暫時放行 | 後台人臉比對＋證件統一編號 HMAC 比對 |
+| 重新 KYC 恢復 | 新裝置重新即時拍證件＋6 動作活體；統一編號 HMAC 相同且人臉相似度 ≥ 0.45 才發起恢復，否則轉人工 | 同左，並加原生 App 裝置認證 |
 | KYC／Visa | 模擬 | 持照 KYC 單位、發卡處理商 |
 | AI 代理金鑰 | 伺服器 `data/store.json` | TDX enclave |
 | 聊天 | ECDH＋AES-GCM | MLS（RFC 9420） |
@@ -98,7 +122,35 @@ npm run build
 
 合約 ABI 在 `src/lib/contracts/abis.ts`，部署用 bytecode 在 `scripts/artifacts/`，都由 `../contracts` 編譯產生。
 
-## KYC 測試模式
+## KYC 後台驗證（規格 §14.3、§14.6）
 
-沒有真人臉部的環境（例如 E2E 測試）可在 `.env.local` 設 `NEXT_PUBLIC_KYC_SIMULATE=1`：活體步驟改為按鈕模擬完成動作，不載入臉部模型。**正式環境不得開啟。**
-證件、臉部影像與動作序列存放在 `data/kyc/<身分地址>/<案件>/`（只有浮水印版），供後台驗證流程處理。
+證件與臉部影像只在自己的伺服器上以 onnxruntime-node 推論，不送往任何第三方；只處理浮水印版影像。
+
+| 模組 | 做法 | 模型（Apache-2.0，由 `npm run fetch-models` 下載到 `models/kyc`，約 140 MB） |
+| --- | --- | --- |
+| 證件 OCR | 文字偵測＋辨識 → 依標籤列取姓名、出生日期、性別、發證日期、住址；統一編號以檢查碼驗證 | PP-OCRv5 mobile（繁簡中文） |
+| 欄位合理性 | 檢查碼、性別與統一編號第二碼、日期範圍 | — |
+| 活體重檢 | 影片每秒 8 格：YuNet 找臉 → 478 點特徵 → 與裝置端相同公式的頭部轉向、眼睛與嘴巴開合；逐一核對 6 個動作在裝置回報的時間窗內真的出現 | YuNet、MediaPipe 臉部 478 點（與裝置端同一份權重的 ONNX 版） |
+| 念數字 | 只取念數字那段音訊，Whisper 辨識後比對 4 位數字（中文、大寫數字、英文都可） | Whisper base（int8） |
+| 人臉比對 | 影片最正面的一格 vs 證件照，SFace 餘弦相似度 | YuNet、SFace |
+| 證號重複 | 統一編號 HMAC 是否已綁定其他 CAFECA 身分 | — |
+
+**決策**
+
+- 明確不是同一人（相似度 < 0.15）或影片中幾乎沒有臉 → 退件，使用者可重拍。
+- 全部通過且相似度 ≥ `KYC_AUTO_FACE`（預設 0.45），並且 `KYC_AUTO_APPROVE=1` → 自動通過。
+- 其他一律轉人工複核。**`KYC_AUTO_APPROVE` 預設關閉**：門檻用真實（經同意的）樣本校準前，所有案件都由人審，複核紀錄與分數就是校準資料。
+
+**人工複核後台 `/admin/kyc`**：以 `.env.local` 的 `KYC_REVIEW_TOKEN`（`npm run deploy` 會自動產生）登入並填寫複核人姓名。可以看到浮水印版證件、臉部影片、每項檢查、擷取欄位與分數，然後核准或退件。每次登入、檢視檔案與決策都寫入 `data/kyc/review-log.jsonl`。核准開戶案件＝寫入 L2；核准恢復案件＝以平台備援金鑰發起恢復。
+
+**伺服器需求**
+
+- 系統要有 `ffmpeg`（或以 `FFMPEG_PATH` 指定），用來解碼臉部影片與音訊。
+- 一件案件在 2 核 CPU 上約 15–30 秒，依序在背景處理；`KYC_THREADS` 可調整推論執行緒數。
+- 缺少模型或 ffmpeg 時，案件會標示原因並轉人工，不會自動通過。
+
+**開發與測試**
+
+- `NEXT_PUBLIC_KYC_SIMULATE=1`：前端活體步驟改為按鈕模擬完成動作（沒有真人臉部的 E2E 環境）。
+- `KYC_PROTOTYPE_AUTO_APPROVE=1`：後台略過模型、全部放行。**兩者都只限開發，正式環境不得開啟。**
+- 證件、臉部影像與動作序列存放在 `data/kyc/<身分地址>/<案件>/`（只有浮水印版）；`case.json` 另存 128 維人臉特徵，供恢復時比對本人。

@@ -41,3 +41,6 @@ yarn-error.log*
 next-env.d.ts
 data/
 .env*.local
+
+# KYC 後台模型（npm run fetch-models 下載）
+/models/

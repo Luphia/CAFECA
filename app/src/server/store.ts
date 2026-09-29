@@ -93,9 +93,23 @@ export type KycCase = {
   actions: { action: string; startedAt: number; completedAt: number; peak: number }[];
   docFeatures: unknown;
   /** 後台處理結果（團隊自建：OCR、活體重檢、人臉比對、翻拍偵測） */
-  status: "pending" | "approved" | "review" | "rejected";
+  status: "pending" | "processing" | "approved" | "review" | "rejected";
   checks: Record<string, { ok: boolean; detail: string }>;
-  fields?: { name?: string; birthday?: string; idNumberHash?: string } | null;
+  /** 擷取出的欄位（不保存統一編號原文與住址，只保存統一編號 HMAC） */
+  fields?: { name?: string; birthday?: string; sex?: string; docType?: string; issueDate?: string; nationality?: string; idNumberHash?: string } | null;
+  /** 身分帳戶（新案件才有；舊案件以所在的 kyc[account] 為準） */
+  account?: string;
+  /** 各模組分數（決策紀錄，供稽核） */
+  scores?: Record<string, number | string | boolean | null>;
+  decidedBy?: "auto" | "reviewer" | "prototype";
+  review?: { by: string; at: number; decision: "approved" | "rejected"; note?: string };
+  /** 恢復案件：新裝置金鑰，核准後由平台備援金鑰發起 initiateRecovery */
+  recovery?: { qx: string; qy: string; rpIdHash: string };
+  /** 核准後的鏈上結果 */
+  result?: { txHash?: string; recoveryTx?: string; readyAt?: number; error?: string };
+  processedAt?: number;
+  /** 背景驗證嘗試次數（伺服器中途重啟時避免同一案件反覆讓程序當掉） */
+  attempts?: number;
 };
 
 export type CardOrder = { owner: string; txHash: string; amount: string; paidAt: number; used: boolean; replaces?: string; issuedFor?: string };

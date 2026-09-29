@@ -370,7 +370,7 @@ EIP-712 的數值請使用 `number` 或十進位字串，不要傳 `bigint`（�
 
 依賴方（例如交易所）要把 CAFECA 的實名結果用在自己的業務上時，一律讀 **IdentityRegistry v2**。位址見 `/.well-known/cafeca-configuration` 的 `contracts.identityRegistry`。
 
-> **目前所有 L2 都是原型簽章。** KYC 後台還只做結構檢查就放行（OCR、活體重檢、人臉比對尚未接上），簽章者等級為 `PROTOTYPE`。正式上線時會換一把新的 kycSigner（`PRODUCTION`），並把原型簽章者移除；原型期的 L2 屆時一律降為 0，需要重新驗證。
+> **目前所有 L2 都是原型簽章。** 簽章者等級為 `PROTOTYPE`。自建的後台驗證（OCR、活體重檢、語音、人臉比對）已經接上，目前一律經人工複核才核准；門檻以真實樣本校準、正式 kycSigner 放進 HSM 之後，才會換成 `PRODUCTION` 簽章者並移除原型簽章者，原型期的 L2 屆時一律降為 0，需要重新驗證。
 
 **等級語意**
 

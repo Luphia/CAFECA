@@ -71,6 +71,8 @@ async function main() {
     // 衍生每個帳戶備援金鑰的種子（正式版：HSM 內每個帳戶產生獨立金鑰，不可匯出）
     GUARDIAN_SEED: () => toHex(crypto.getRandomValues(new Uint8Array(32))),
     SESSION_SECRET: () => toHex(crypto.getRandomValues(new Uint8Array(32))),
+    // KYC 人工複核後台（/admin/kyc）的登入密碼
+    KYC_REVIEW_TOKEN: () => toHex(crypto.getRandomValues(new Uint8Array(16))).slice(2),
   };
   let appended = "";
   for (const [k, fn] of Object.entries(gen)) {

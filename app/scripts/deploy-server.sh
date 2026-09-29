@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# CAFECA 錢包伺服器部署（在跑 cafeca.io 的那台伺服器、app 目錄下執行）
+#
+#   PUBLIC_ORIGIN=https://cafeca.io npm run deploy:server
+#
+# 依序：安裝 ffmpeg → 更新程式 → npm install（含 KYC 模型）→ 補齊 .env.local →
+#       （需要時）增量部署 IdentityRegistry v2 → 建置 → 重新啟動 → 排程 /api/identity/sync → 檢查
+# 每一步都可以重複執行；已完成的步驟會自動略過。
+#
+# 選項（環境變數）
+#   PUBLIC_ORIGIN      對外網址，例 https://cafeca.io（第一次必填，之後從 .env.local 讀）
+#   SKIP_PULL=1        不執行 git pull
+#   SKIP_IDENTITY=1    不自動執行 npm run deploy -- --identity
+#   SKIP_CRON=1        不建立 /api/identity/sync 的 crontab
+#   PM2_NAME=cafeca    以 pm2 管理時的程序名稱（預設 cafeca）
+#   SYSTEMD_UNIT=xxx   以 systemd 管理時的服務名稱（設定後改用 systemctl restart）
+#   PORT=10002         npm start 的埠（與 package.json 一致）
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+APP_DIR="$(pwd)"
+ENV_FILE="$APP_DIR/.env.local"
+PM2_NAME="${PM2_NAME:-cafeca}"
+PORT="${PORT:-10002}"
+
+step() { printf '\n\033[1;35m▶ %s\033[0m\n' "$*"; }
+ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+die() { printf '  \033[31m✕ %s\033[0m\n' "$*" >&2; exit 1; }
+
+sudo_cmd() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null; then sudo "$@"; else die "需要 root 權限執行：$*"; fi; }
+
+env_get() { [ -f "$ENV_FILE" ] && grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true; }
+env_set() {
+  local k="$1" v="$2"
+  touch "$ENV_FILE"
+  if grep -qE "^$k=" "$ENV_FILE"; then
+    sed -i.bak -E "s|^$k=.*|$k=$v|" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+  else
+    printf '%s=%s\n' "$k" "$v" >> "$ENV_FILE"
+  fi
+}
+
+# ───────────────────────── 1. ffmpeg ─────────────────────────
+step "ffmpeg（KYC 解碼臉部影片與音訊）"
+if command -v ffmpeg >/dev/null; then
+  ok "已安裝：$(ffmpeg -version | head -1)"
+else
+  if command -v apt-get >/dev/null; then sudo_cmd apt-get update -y && sudo_cmd apt-get install -y ffmpeg
+  elif command -v dnf >/dev/null; then sudo_cmd dnf install -y ffmpeg || sudo_cmd dnf install -y ffmpeg-free
+  elif command -v yum >/dev/null; then sudo_cmd yum install -y ffmpeg
+  elif command -v apk >/dev/null; then sudo_cmd apk add --no-cache ffmpeg
+  elif command -v brew >/dev/null; then brew install ffmpeg
+  else die "找不到套件管理工具，請手動安裝 ffmpeg，或設定 FFMPEG_PATH"; fi
+  command -v ffmpeg >/dev/null || die "ffmpeg 安裝失敗"
+  ok "已安裝：$(ffmpeg -version | head -1)"
+fi
+
+# ───────────────────────── 2. 程式碼 ─────────────────────────
+step "更新程式碼"
+if [ "${SKIP_PULL:-}" = "1" ]; then
+  warn "SKIP_PULL=1，略過 git pull"
+elif git -C "$APP_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [ -n "$(git -C "$APP_DIR" status --porcelain --untracked-files=no)" ]; then
+    die "工作目錄有未提交的修改，請先處理（或 SKIP_PULL=1 略過）"
+  fi
+  git -C "$APP_DIR" pull --ff-only
+  ok "$(git -C "$APP_DIR" log --oneline -1)"
+else
+  warn "不是 git 目錄，略過"
+fi
+
+# ───────────────────────── 3. 相依套件與模型 ─────────────────────────
+step "npm install（postinstall 會下載 MediaPipe 與 KYC 模型，約 140 MB）"
+node -e 'const [a]=process.versions.node.split(".");if(+a<20){console.error("需要 Node.js 20 以上，目前 "+process.version);process.exit(1)}'
+npm install
+npm run fetch-models
+missing=0
+for f in face_detection_yunet_2023mar.onnx face_recognition_sface_2021dec.onnx face_landmarks_478.onnx ppocrv5_det.onnx ppocrv5_rec.onnx ppocrv5_dict.txt whisper/onnx-community/whisper-base/onnx/encoder_model_quantized.onnx; do
+  [ -f "models/kyc/$f" ] || { warn "缺少 models/kyc/$f"; missing=1; }
+done
+[ "$missing" = 0 ] && ok "KYC 模型齊全" || warn "模型不齊：後台驗證會把案件全部轉人工。請確認伺服器可連 huggingface.co 後重跑 npm run fetch-models"
+
+# ───────────────────────── 4. .env.local ─────────────────────────
+step "設定 .env.local"
+[ -f "$ENV_FILE" ] || die "找不到 .env.local（部署者私鑰與服務金鑰）。第一次部署請先執行 npm run deploy"
+origin="${PUBLIC_ORIGIN:-$(env_get PUBLIC_ORIGIN)}"
+[ -n "$origin" ] || die "請提供對外網址：PUBLIC_ORIGIN=https://cafeca.io npm run deploy:server"
+origin="${origin%/}"
+env_set PUBLIC_ORIGIN "$origin"
+ok "PUBLIC_ORIGIN=$origin"
+if [ -z "$(env_get KYC_REVIEW_TOKEN)" ]; then
+  env_set KYC_REVIEW_TOKEN "$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))')"
+  ok "已產生 KYC_REVIEW_TOKEN（人工複核後台 $origin/admin/kyc 的密碼，見 .env.local）"
+else
+  ok "KYC_REVIEW_TOKEN 已設定"
+fi
+for k in KYC_PROTOTYPE_AUTO_APPROVE NEXT_PUBLIC_KYC_SIMULATE; do
+  [ "$(env_get $k)" = "1" ] && warn "$k=1 只限開發，正式環境請移除"
+done
+[ "$(env_get KYC_AUTO_APPROVE)" = "1" ] && ok "KYC_AUTO_APPROVE=1（高信心案件自動通過）" || ok "KYC_AUTO_APPROVE 未開啟：所有案件轉人工複核（門檻校準前的預設）"
+
+# ───────────────────────── 5. IdentityRegistry v2 ─────────────────────────
+step "IdentityRegistry v2"
+dep_file="deployments/boltchain-testnet.local.json"
+[ -f "$dep_file" ] || dep_file="deployments/boltchain-testnet.json"
+if node -e "process.exit(require('./$dep_file').identityRegistry ? 0 : 1)" 2>/dev/null; then
+  ok "已部署：$(node -p "require('./$dep_file').identityRegistry")"
+elif [ "${SKIP_IDENTITY:-}" = "1" ]; then
+  warn "SKIP_IDENTITY=1，略過（依賴方仍會讀不到 v2）"
+else
+  warn "尚未部署，執行 npm run deploy -- --identity（需要部署者約 6.5 BOLT）"
+  npm run deploy -- --identity
+fi
+
+# ───────────────────────── 6. 建置 ─────────────────────────
+step "npm run build（合約地址在建置時寫入，部署合約後一定要重新建置）"
+npm run build
+
+# ───────────────────────── 7. 重新啟動 ─────────────────────────
+step "重新啟動"
+if [ -n "${SYSTEMD_UNIT:-}" ]; then
+  sudo_cmd systemctl restart "$SYSTEMD_UNIT"
+  ok "systemctl restart $SYSTEMD_UNIT"
+elif command -v pm2 >/dev/null; then
+  if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then pm2 restart "$PM2_NAME" --update-env
+  else pm2 start npm --name "$PM2_NAME" -- start; fi
+  pm2 save >/dev/null 2>&1 || true
+  ok "pm2：$PM2_NAME"
+else
+  warn "沒有 pm2 也沒有設定 SYSTEMD_UNIT：請用你平常的方式重新啟動 npm start（或 npm i -g pm2 後重跑）"
+fi
+
+# ───────────────────────── 8. 排程 ─────────────────────────
+step "排程 /api/identity/sync（恢復後重新簽發或暫停實名證明）"
+cron_line="*/5 * * * * curl -fsS -X POST $origin/api/identity/sync > /dev/null 2>&1 # cafeca-identity-sync"
+if [ "${SKIP_CRON:-}" = "1" ]; then
+  warn "SKIP_CRON=1，略過"
+elif command -v crontab >/dev/null; then
+  ( crontab -l 2>/dev/null | grep -v "# cafeca-identity-sync" ; echo "$cron_line" ) | crontab -
+  ok "crontab：每 5 分鐘"
+else
+  warn "沒有 crontab，請自行每 5 分鐘呼叫：curl -X POST $origin/api/identity/sync"
+fi
+
+# ───────────────────────── 9. 檢查 ─────────────────────────
+step "檢查"
+cfg=""
+for i in $(seq 1 30); do
+  cfg="$(curl -fsS "http://127.0.0.1:$PORT/.well-known/cafeca-configuration" 2>/dev/null || true)"
+  [ -n "$cfg" ] && break
+  sleep 2
+done
+if [ -z "$cfg" ]; then
+  warn "本機 http://127.0.0.1:$PORT 沒有回應，請確認服務已啟動"
+else
+  echo "$cfg" | node -e '
+    let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+      const c=JSON.parse(s), want=process.argv[1];
+      const line=(ok,t)=>console.log(`  ${ok?"\x1b[32m✓\x1b[0m":"\x1b[31m✕\x1b[0m"} ${t}`);
+      line(c.issuer===want, `issuer ${c.issuer}`);
+      line(!!c.chain?.rpc && !/boltchain\.cafeca\.io/.test(c.chain.rpc), `chain.rpc ${c.chain?.rpc}`);
+      line(!!c.contracts?.identityRegistry, `contracts.identityRegistry ${c.contracts?.identityRegistry}`);
+    });' "$origin"
+fi
+curl -fsS -X POST "http://127.0.0.1:$PORT/api/identity/sync" >/dev/null 2>&1 && ok "/api/identity/sync 可呼叫" || warn "/api/identity/sync 呼叫失敗"
+printf '\n完成。對外檢查：curl -s %s/.well-known/cafeca-configuration\n' "$origin"

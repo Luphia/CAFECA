@@ -24,4 +24,6 @@ export const env = {
   guardianSeed: () => req("GUARDIAN_SEED") as Hex,
   sessionSecret: () => req("SESSION_SECRET"),
   kycRecordSecret: () => req("SESSION_SECRET") + ":kyc-record",
+  /** KYC 人工複核後台（/admin/kyc）的登入密碼；未設定時後台停用 */
+  kycReviewToken: () => process.env.KYC_REVIEW_TOKEN ?? "",
 };

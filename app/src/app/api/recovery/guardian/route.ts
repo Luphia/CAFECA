@@ -1,15 +1,13 @@
-import { encodeFunctionData, getAddress, isAddress, isHex, type Hex } from "viem";
+import { getAddress, isAddress, isHex, type Hex } from "viem";
 import { DEPLOYMENT, IdentityStatus } from "@/lib/config";
-import { attestationRegistryAbi, recoveryValidatorAbi } from "@/lib/contracts/abis";
-import { execCall } from "@/lib/userop";
-import { prepareUserOp, sendUserOp } from "@/server/bundler";
+import { attestationRegistryAbi } from "@/lib/contracts/abis";
 import { publicClient } from "@/server/chain";
-import { currentGuardian, guardianAddress, guardianSigner } from "@/server/guardian";
+import { currentGuardian, guardianAddress } from "@/server/guardian";
 import { intakeEvidence } from "@/server/kyc";
-import { runPipeline, sameSubject } from "@/server/kyc-pipeline";
+import { enqueue, findCase, publicView, saveCase } from "@/server/kyc-queue";
 import { identityState } from "@/server/identity";
 import { handle, HttpError } from "@/server/session";
-import { read, update } from "@/server/store";
+import { read } from "@/server/store";
 
 /**
  * 裝置全部遺失時：在新裝置重新即時拍攝證件（浮水印版）、依 6 個隨機動作錄臉部影像，後台確認與開戶時是同一人後，
@@ -41,30 +39,20 @@ export const POST = handle(async (req: Request) => {
   const rec = key ? (await read()).kyc[key] : undefined;
   const onboard = rec?.cases?.find((c) => c.purpose === "onboard" && c.status === "approved");
   if (!rec || !onboard) throw new HttpError(403, "找不到此身分的實名驗證紀錄");
-  // 重新拍證件＋錄臉部影像，後台確認與開戶時是同一人
-  const intake = await intakeEvidence(a, form, "recover");
-  const c = await runPipeline(intake);
-  const same = await sameSubject(onboard, c);
-  c.checks.sameSubject = same;
-  if (c.status !== "approved" || !same.ok) {
-    c.status = c.status === "rejected" ? "rejected" : "review";
-    await update((s) => {
-      s.kyc[key!].cases = [...(s.kyc[key!].cases ?? []), c];
-    });
-    throw new HttpError(403, "身分驗證未通過或需要人工複核，我們會通知你結果");
-  }
+  // 重新拍證件＋錄臉部影像；後台驗證並確認與開戶時是同一人後，才以平台備援金鑰發起恢復
+  const c = await intakeEvidence(a, form, "recover");
+  await saveCase(a, { ...c, account: a, recovery: { qx, qy, rpIdHash } });
+  enqueue(a, c.id);
+  return Response.json(publicView(c));
+});
 
-  const callData = execCall(
-    DEPLOYMENT.recovery,
-    encodeFunctionData({ abi: recoveryValidatorAbi, functionName: "initiateRecovery", args: [qx, qy, rpIdHash, false] }),
-  );
-  const { userOp, userOpHash } = await prepareUserOp({ sender: a, validator: DEPLOYMENT.recovery, callData });
-  userOp.signature = await guardianSigner(a).signMessage({ message: { raw: userOpHash } });
-  const res = await sendUserOp(userOp);
-  if (!res.success) throw new HttpError(400, `恢復請求執行失敗：${res.reason ?? "未知原因"}`);
-  await update((s) => {
-    s.kyc[key!].cases = [...(s.kyc[key!].cases ?? []), c];
-  });
-  const p = await publicClient.readContract({ address: DEPLOYMENT.recovery, abi: recoveryValidatorAbi, functionName: "pending", args: [a] });
-  return Response.json({ txHash: res.txHash, readyAt: Number(p[2]) });
+/** 查詢恢復案件：GET ?account=<地址>&case=<id>（案件 id 只有送出的裝置知道） */
+export const GET = handle(async (req: Request) => {
+  const q = new URL(req.url).searchParams;
+  const account = q.get("account") ?? "";
+  const id = q.get("case") ?? "";
+  if (!isAddress(account) || !/^[0-9a-f]{16}$/.test(id)) throw new HttpError(400, "參數格式錯誤");
+  const c = await findCase(account, id);
+  if (!c || c.purpose !== "recover") throw new HttpError(404, "找不到這個恢復案件");
+  return Response.json(publicView(c));
 });
