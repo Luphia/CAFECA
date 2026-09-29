@@ -10,7 +10,7 @@ export type ChatMessage = {
   from: string; // address 或 "system"
   to: string;
   fromDevice?: string;
-  kind: "text" | "pay.request" | "pay.receipt" | "pay.transfer" | "agent.intent" | "system";
+  kind: "text" | "pay.request" | "pay.receipt" | "pay.transfer" | "file" | "location" | "agent.intent" | "system";
   /** 端對端加密內容：deviceId → 密文（system 訊息為明文 body） */
   envelopes?: Record<string, ChatEnvelope>;
   body?: unknown;
@@ -62,6 +62,8 @@ export type Store = {
   /** 票券（活動、交通等），由票券發行方簽章，持有人以數位身分出示 */
   tickets: Record<string, Ticket>;
   /** 身分狀態同步進度（處理到哪個區塊的 RecoveryExecuted） */
+  /** 聊天附件（檔案內容在傳送端就以一次性金鑰加密，伺服器只保存密文；金鑰在端對端加密的訊息裡） */
+  chatBlobs?: Record<string, { from: string; to: string; size: number; createdAt: number }>;
   identitySync?: { lastBlock: number; log: { account: string; block: number; action: "reattest" | "suspend" | "skip"; tx?: string; at: number }[] };
 };
 

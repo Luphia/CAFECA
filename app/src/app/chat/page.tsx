@@ -11,28 +11,30 @@ import { execCall } from "@/lib/userop";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
 import { useWallet } from "@/components/wallet-provider";
-import { Badge, Button, cx, inputCls, Notice, Panel, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
+import { Badge, Button, cx, inputCls, Notice, Panel, Spinner, TxLink, errMsg, fmtTwdc, short, useToast } from "@/components/ui";
 import { AddressInput } from "@/components/address-input";
 import { HandlePanel } from "@/components/handle-panel";
+import { MAX_FILE, encryptFile, fetchFile, fmtSize, imageThumb, type FileRef } from "@/lib/chat-file";
 
 type RawMsg = {
   id: string;
   from: string;
   to: string;
   fromDevice?: Hex;
-  kind: "text" | "pay.request" | "pay.receipt" | "pay.transfer" | "agent.intent" | "system";
+  kind: "text" | "pay.request" | "pay.receipt" | "pay.transfer" | "file" | "location" | "agent.intent" | "system";
   envelopes?: Record<string, { iv: string; ct: string }>;
   body?: Record<string, string>;
   ts: number;
 };
 
-type Payload = { text?: string; amount?: string; memo?: string; txHash?: Hex; requestId?: string };
+type Loc = { lat: number; lng: number; acc?: number };
+type Payload = { text?: string; amount?: string; memo?: string; txHash?: Hex; requestId?: string; file?: FileRef; loc?: Loc };
 
 const SYSTEM = "system";
 
 /** 鏈上的 TWDC 轉帳（不論是在聊天、錢包或其他地方送出，都顯示在與對方的對話中） */
 type ChainTx = { hash: Hex; from: string; to: string; value: bigint; ts: number };
-type Mode = "text" | "request" | "transfer";
+type Mode = "text" | "request" | "transfer" | "location";
 
 export default function ChatPage() {
   return (
@@ -274,6 +276,8 @@ function preview(m: RawMsg, p: Payload | null | undefined) {
   if (m.kind === "pay.request") return `💸 付款請求 ${p.amount} TWDC`;
   if (m.kind === "pay.receipt") return `✅ 已付款 ${p.amount} TWDC`;
   if (m.kind === "pay.transfer") return `💸 轉帳 ${p.amount} TWDC`;
+  if (m.kind === "file") return p.file?.mime.startsWith("image/") ? "📷 照片" : `📎 ${p.file?.name ?? "檔案"}`;
+  if (m.kind === "location") return "📍 分享了位置";
   return p.text ?? "";
 }
 
@@ -312,6 +316,10 @@ function Thread({
   const [mode, setMode] = useState<Mode>("text");
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [menu, setMenu] = useState(false);
+  const [loc, setLoc] = useState<Loc | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
   const thread = msgs.filter((m) => m.from.toLowerCase() === peer || m.to.toLowerCase() === peer).sort((a, b) => a.ts - b.ts);
@@ -341,7 +349,12 @@ function Thread({
     if (mode === "text" && !text.trim()) return;
     setBusy("send");
     try {
-      if (mode === "request") {
+      if (mode === "location") {
+        if (!loc) throw new Error("尚未取得位置");
+        await send("location", { loc, text: text.trim() || undefined });
+        setMode("text");
+        setLoc(null);
+      } else if (mode === "request") {
         if (!(parseUnits(amount || "0", TWDC_DECIMALS) > 0n)) throw new Error("請輸入金額");
         await send("pay.request", { amount, memo: text });
         setMode("text");
@@ -369,6 +382,59 @@ function Thread({
     } finally {
       setBusy(null);
     }
+  };
+
+  /** 檔案與相機照片：本機加密 → 上傳密文 → 以端對端加密訊息送出金鑰 */
+  const sendFile = async (file: File | undefined) => {
+    if (!file) return;
+    setMenu(false);
+    setBusy("file");
+    try {
+      if (file.size > MAX_FILE) throw new Error(`檔案不能超過 ${fmtSize(MAX_FILE)}`);
+      const [theirs] = await Promise.all([devicesOf(getAddress(peer))]);
+      if (theirs.length === 0) throw new Error("對方尚未啟用加密聊天");
+      const enc = await encryptFile(file);
+      const up = await fetch(`/api/chat/blob?to=${getAddress(peer)}`, { method: "POST", headers: { "content-type": "application/octet-stream" }, body: enc.ct as BufferSource });
+      const j = (await up.json()) as { id?: string; error?: string };
+      if (!up.ok || !j.id) throw new Error(j.error ?? "上傳失敗");
+      const t = file.type.startsWith("image/") ? await imageThumb(file) : null;
+      const ref: FileRef = { id: j.id, name: file.name || "photo.jpg", mime: file.type || "application/octet-stream", size: file.size, key: enc.key, iv: enc.iv, sha256: enc.sha256, ...(t ?? {}) };
+      await send("file", { file: ref });
+    } catch (e) {
+      toast(errMsg(e), "danger");
+    } finally {
+      setBusy(null);
+      if (fileInput.current) fileInput.current.value = "";
+      if (cameraInput.current) cameraInput.current.value = "";
+    }
+  };
+
+  const menuAction = (id: "transfer" | "request" | "camera" | "file" | "location") => {
+    if (id === "transfer" || id === "request") {
+      setMode(id);
+      setMenu(false);
+    } else if (id === "camera") cameraInput.current?.click();
+    else if (id === "file") fileInput.current?.click();
+    else pickLocation();
+  };
+
+  /** 分享位置：先取得並顯示給使用者確認，按送出才會傳出去 */
+  const pickLocation = () => {
+    setMenu(false);
+    if (!navigator.geolocation) return toast("這個瀏覽器不支援定位", "danger");
+    setBusy("loc");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLoc({ lat: Number(pos.coords.latitude.toFixed(6)), lng: Number(pos.coords.longitude.toFixed(6)), acc: Math.round(pos.coords.accuracy) });
+        setMode("location");
+        setBusy(null);
+      },
+      (err) => {
+        setBusy(null);
+        toast(err.code === err.PERMISSION_DENIED ? "未允許存取位置，請在瀏覽器設定中開啟" : "無法取得目前位置", "danger");
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 },
+    );
   };
 
   const pay = async (m: RawMsg, p: Payload) => {
@@ -488,6 +554,8 @@ function Thread({
                     {p.txHash && <TxLink hash={p.txHash} className={mine ? "text-white underline" : undefined} />}
                   </div>
                 )}
+                {p && m.kind === "file" && p.file && <FileBubble f={p.file} mine={mine} />}
+                {p && m.kind === "location" && p.loc && <LocationBubble loc={p.loc} note={p.text} mine={mine} />}
                 {p && m.kind === "pay.receipt" && (
                   <div>
                     <div className="text-xs opacity-80">✅ 已付款</div>
@@ -507,32 +575,60 @@ function Thread({
 
       {peer !== SYSTEM && (
         <div className="sticky bottom-20 mt-3 space-y-2 rounded-2xl border border-line bg-surface p-2">
-          {mode !== "text" && (
+          {menu && (
+            <div className="grid grid-cols-5 gap-1 pb-1" data-testid="chat-menu" role="menu">
+              {(
+                [
+                  ["transfer", "轉帳", <path key="t" d="M7 17L17 7M9 7h8v8" />],
+                  ["request", "收款", <path key="r" d="M17 7L7 17M15 17H7V9" />],
+                  ["camera", "相機", <g key="c"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></g>],
+                  ["file", "檔案", <g key="f"><path d="M14 3H6v18h12V7z" /><path d="M14 3v4h4" /></g>],
+                  ["location", "位置", <g key="l"><path d="M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11z" /><circle cx="12" cy="10" r="2.2" /></g>],
+                ] as const
+              ).map(([id, label, icon]) => (
+                <button key={id} role="menuitem" className="flex flex-col items-center gap-1 rounded-xl py-2 text-[11px] text-ink-2 hover:bg-surface-2" onClick={() => menuAction(id)} data-testid={`chat-menu-${id}`}>
+                  <span className="grid size-11 place-items-center rounded-full bg-brand-bg text-brand">
+                    <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      {icon}
+                    </svg>
+                  </span>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          <input ref={fileInput} type="file" className="hidden" onChange={(e) => sendFile(e.target.files?.[0])} data-testid="chat-file-input" />
+          <input ref={cameraInput} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => sendFile(e.target.files?.[0])} data-testid="chat-camera-input" />
+          {(busy === "file" || busy === "loc") && (
+            <div className="flex items-center gap-2 px-1 text-xs text-ink-3"><Spinner className="size-3.5" /> {busy === "file" ? "加密並上傳中…" : "取得位置中…"}</div>
+          )}
+          {mode === "location" && loc && (
+            <div className="flex items-center gap-2 rounded-xl bg-surface-2 px-3 py-2 text-sm" data-testid="loc-preview">
+              <span className="min-w-0 flex-1">
+                📍 即將分享你目前的位置
+                <span className="block text-xs text-ink-3">{loc.lat}, {loc.lng}{loc.acc ? `（誤差約 ${loc.acc} 公尺）` : ""}</span>
+              </span>
+              <button className="text-xs text-ink-3 underline" onClick={() => { setMode("text"); setLoc(null); }}>取消</button>
+            </div>
+          )}
+          {(mode === "transfer" || mode === "request") && (
             <div className="flex items-center gap-2">
               <span className="shrink-0 text-sm text-ink-2">{mode === "transfer" ? "轉帳金額" : "請求金額"}</span>
               <input className={inputCls} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" inputMode="decimal" />
               <span className="text-sm text-ink-2">TWDC</span>
+              <button className="shrink-0 text-xs text-ink-3 underline" onClick={() => { setMode("text"); setAmount(""); }}>取消</button>
             </div>
           )}
           <div className="flex gap-2">
             <button
-              className={cx("grid size-11 shrink-0 place-items-center rounded-xl border", mode === "transfer" ? "border-brand bg-brand-bg text-brand" : "border-line text-ink-2")}
-              onClick={() => setMode(mode === "transfer" ? "text" : "transfer")}
-              aria-label="轉帳給對方"
-              title="轉帳給對方"
+              className={cx("grid size-11 shrink-0 place-items-center rounded-xl border transition-transform", menu ? "rotate-45 border-brand bg-brand-bg text-brand" : "border-line text-ink-2")}
+              onClick={() => setMenu(!menu)}
+              aria-label="更多功能"
+              aria-expanded={menu}
+              data-testid="chat-plus"
             >
-              <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M7 17L17 7M9 7h8v8" />
-              </svg>
-            </button>
-            <button
-              className={cx("grid size-11 shrink-0 place-items-center rounded-xl border", mode === "request" ? "border-brand bg-brand-bg text-brand" : "border-line text-ink-2")}
-              onClick={() => setMode(mode === "request" ? "text" : "request")}
-              aria-label="付款請求"
-              title="向對方請求付款"
-            >
-              <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M17 7L7 17M15 17H7V9" />
+              <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                <path d="M12 5v14M5 12h14" />
               </svg>
             </button>
             <input
@@ -540,9 +636,9 @@ function Thread({
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && sendText()}
-              placeholder={mode === "text" ? "輸入訊息" : "備註（例：午餐）"}
+              placeholder={mode === "text" ? "輸入訊息" : mode === "location" ? "附註（選填）" : "備註（例：午餐）"}
             />
-            <Button onClick={sendText} busy={busy === "send"} disabled={mode === "text" ? !text.trim() : !amount}>
+            <Button onClick={sendText} busy={busy === "send"} disabled={mode === "text" ? !text.trim() : mode === "location" ? !loc : !amount} testId="chat-send">
               {mode === "transfer" ? "轉帳" : "送出"}
             </Button>
           </div>
@@ -550,6 +646,72 @@ function Thread({
         </div>
       )}
       {peer === SYSTEM && <Notice>AI 代理超過確認門檻時，會在這裡請你核准。</Notice>}
+    </div>
+  );
+}
+
+function FileBubble({ f, mine }: { f: FileRef; mine: boolean }) {
+  const toast = useToast();
+  const [url, setUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const isImg = f.mime.startsWith("image/");
+  const open = async (download: boolean) => {
+    setBusy(true);
+    try {
+      const b = await fetchFile(f);
+      const u = url ?? URL.createObjectURL(b);
+      if (!url && isImg) setUrl(u);
+      if (download) {
+        const a = document.createElement("a");
+        a.href = u;
+        a.download = f.name;
+        a.click();
+      }
+    } catch (e) {
+      toast(errMsg(e), "danger");
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (isImg) {
+    return (
+      <div data-testid="file-bubble" data-kind="image">
+        <button className="block overflow-hidden rounded-xl" onClick={() => open(!!url)} title={url ? "下載原圖" : "載入原圖"}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url ?? f.thumb} alt={f.name} className="max-h-72 w-auto max-w-full" style={f.w && f.h ? { aspectRatio: `${f.w} / ${f.h}` } : undefined} data-testid="file-image" />
+        </button>
+        <div className={cx("mt-1 text-[11px]", mine ? "text-white/70" : "text-ink-3")}>
+          {busy ? "解密中…" : url ? "點圖片下載原圖" : `點圖片載入原圖 · ${fmtSize(f.size)}`}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <button className="flex items-center gap-3 text-left" onClick={() => open(true)} data-testid="file-bubble" data-kind="file">
+      <span className={cx("grid size-10 shrink-0 place-items-center rounded-lg", mine ? "bg-white/20" : "bg-surface-2")}>
+        {busy ? <Spinner className="size-4" /> : <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M14 3H6v18h12V7z" /><path d="M14 3v4h4" /></svg>}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium" data-testid="file-name">{f.name}</span>
+        <span className={cx("block text-[11px]", mine ? "text-white/70" : "text-ink-3")}>{fmtSize(f.size)} · 點一下下載</span>
+      </span>
+    </button>
+  );
+}
+
+function LocationBubble({ loc, note, mine }: { loc: Loc; note?: string; mine: boolean }) {
+  const osm = `https://www.openstreetmap.org/?mlat=${loc.lat}&mlon=${loc.lng}#map=17/${loc.lat}/${loc.lng}`;
+  const gmap = `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lng}`;
+  return (
+    <div data-testid="location-bubble">
+      <div className="text-xs opacity-80">📍 {mine ? "你分享的位置" : "對方分享的位置"}</div>
+      <div className="font-mono text-sm">{loc.lat}, {loc.lng}</div>
+      {loc.acc ? <div className={cx("text-[11px]", mine ? "text-white/70" : "text-ink-3")}>誤差約 {loc.acc} 公尺</div> : null}
+      {note && <div className="text-sm">{note}</div>}
+      <div className="mt-1 flex gap-3 text-xs">
+        <a href={gmap} target="_blank" rel="noopener noreferrer" className="underline">Google 地圖</a>
+        <a href={osm} target="_blank" rel="noopener noreferrer" className="underline">OpenStreetMap</a>
+      </div>
     </div>
   );
 }
