@@ -57,6 +57,8 @@ export type Store = {
   pairings: Record<string, Pairing>;
   /** 票券（活動、交通等），由票券發行方簽章，持有人以數位身分出示 */
   tickets: Record<string, Ticket>;
+  /** 身分狀態同步進度（處理到哪個區塊的 RecoveryExecuted） */
+  identitySync?: { lastBlock: number; log: { account: string; block: number; action: "reattest" | "suspend" | "skip"; tx?: string; at: number }[] };
 };
 
 export type Ticket = {

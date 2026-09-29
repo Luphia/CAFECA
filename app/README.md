@@ -17,6 +17,12 @@ npm run dev   # http://localhost:10002
 npm run demo:signin   # 選用：第三方登入範例網站 http://localhost:10003
 ```
 
+**IdentityRegistry v2（規格 §16.2）**：已經部署過的環境執行 `npm run deploy -- --identity`，只增量部署 v2、把 v1 仍有效的證明遷移過去，並重新部署改讀 v2 的 paymaster（會取回舊 paymaster 的押金，需要約 6.5 BOLT）。工廠與 KeyringValidator 不動，既有身分地址不變。完成後重新啟動 `npm run dev`／`npm start`。
+
+- 身分恢復執行後，由 `POST /api/identity/sync` 重新簽發或暫停 v2 證明。恢復頁面會自動觸發；正式環境請再加排程（例如每 5 分鐘 `curl -X POST https://<網域>/api/identity/sync`）。
+- 部署在反向代理後方時設定 `PUBLIC_ORIGIN=https://<網域>`；公開 RPC 預設為 `<PUBLIC_ORIGIN>/api/rpc`，可用 `PUBLIC_RPC_URL` 覆寫。
+- `KYC_SIGNER_CLASS=PRODUCTION` 只在正式 KYC 後台上線、換上 HSM 金鑰後使用；原型期維持預設（PROTOTYPE）。
+
 已經部署過、之後合約有變更（例如 v0.3 金鑰模型）時，`npm run deploy` 會補上缺少的服務金鑰（`GUARDIAN_ROOT_KEY`、`GUARDIAN_SEED`）並整套重新部署；舊身分不會搬到新合約，需重新建立。只改了工廠合約時可用 `npm run deploy -- --factory`。
 
 Passkey 需要安全環境：本機請用 `http://localhost:10002`，其他網域須為 https。
@@ -51,6 +57,7 @@ Next.js Route Handlers（伺服器）
  ├─ /api/bundler     組 UserOp、paymaster 簽章、handleOps 送出
  ├─ /api/auth        ERC-1271 登入挑戰 → session cookie
  ├─ /api/signin      /.well-known/cafeca-configuration（第三方登入探索文件）
+ ├─ /api/identity    恢復後的實名證明同步（IdentityRegistry v2 重新簽發或暫停）
  ├─ /api/channel     簽章通道中繼信箱（只存端對端加密的密文）
  ├─ /api/issuer      發卡方簽署卡片證明
  ├─ /api/kyc         模擬 KYC 單位（證件＋臉部影像、活體挑戰）

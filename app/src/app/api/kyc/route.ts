@@ -1,26 +1,10 @@
-import { keccak256, toHex, zeroAddress, type Hex } from "viem";
-import { DEPLOYMENT } from "@/lib/config";
-import { attestationRegistryAbi } from "@/lib/contracts/abis";
-import { operatorTx, publicClient, signerOf } from "@/server/chain";
-import { env } from "@/server/env";
+import { zeroAddress } from "viem";
+import { attestIdentity, claimsRootOf } from "@/server/identity";
 import { authorizeGuardian, currentGuardian, guardianAddress } from "@/server/guardian";
 import { intakeEvidence } from "@/server/kyc";
 import { runPipeline } from "@/server/kyc-pipeline";
 import { handle, requireSession } from "@/server/session";
 import { update } from "@/server/store";
-
-function merkleRoot(leaves: Hex[]): Hex {
-  let level = [...leaves];
-  while (level.length > 1) {
-    const next: Hex[] = [];
-    for (let i = 0; i < level.length; i += 2) {
-      const [a, b] = [level[i], level[i + 1] ?? level[i]];
-      next.push(keccak256(a < b ? `${a}${b.slice(2)}` as Hex : `${b}${a.slice(2)}` as Hex));
-    }
-    level = next;
-  }
-  return level[0];
-}
 
 /**
  * L2 KYC（規格 §14）：使用者只提交「即時拍攝、已疊浮水印」的身分證正反面，以及依 6 個隨機動作錄製的臉部影像。
@@ -42,27 +26,15 @@ export const POST = handle(async (req: Request) => {
     return Response.json({ status: c.status, caseId: c.id, checks: c.checks });
   }
 
-  const leaves = (["front", "back", "face"] as const).map((k) => keccak256(toHex(`${k}:${c.hashes[k]}`)) as Hex);
-  const claimsRoot = merkleRoot(leaves);
+  const claimsRoot = claimsRootOf(c);
   const expiry = Math.floor(Date.now() / 1000) + 365 * 86400;
-  const digest = await publicClient.readContract({
-    address: DEPLOYMENT.attestation,
-    abi: attestationRegistryAbi,
-    functionName: "attestationDigest",
-    args: [me, 2, claimsRoot, expiry],
-  });
-  const sig = await signerOf(env.kycSignerKey()).sign({ hash: digest });
-  const r = await operatorTx({
-    address: DEPLOYMENT.attestation,
-    abi: attestationRegistryAbi,
-    functionName: "attest",
-    args: [me, 2, claimsRoot, expiry, sig],
-  });
+  // v1（綁卡門檻）＋ v2（依賴方）雙寫；v2 每筆帶 nonce，恢復後的暫停也會被新的證明解除
+  const r = await attestIdentity(me, { level: 2, claimsRoot, expiry, jurisdiction: "TW" });
 
   const onChain = await currentGuardian(me);
   const guardian =
     onChain === zeroAddress
       ? { address: guardianAddress(me), authoritySig: await authorizeGuardian(me, guardianAddress(me)) }
       : null;
-  return Response.json({ status: c.status, caseId: c.id, checks: c.checks, claimsRoot, txHash: r.transactionHash, guardian });
+  return Response.json({ status: c.status, caseId: c.id, checks: c.checks, claimsRoot, txHash: r.v2Tx ?? r.v1Tx, guardian });
 });

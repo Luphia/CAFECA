@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { erc20Abi, zeroAddress, type Address } from "viem";
 import { DEPLOYMENT } from "@/lib/config";
-import { attestationRegistryAbi, keyringValidatorAbi, recoveryValidatorAbi } from "@/lib/contracts/abis";
+import { attestationRegistryAbi, identityRegistryAbi, keyringValidatorAbi, recoveryValidatorAbi } from "@/lib/contracts/abis";
 import { api, clearWallet, loadWallet, publicClient, type LocalWallet } from "@/lib/client";
 import { encode1271 } from "@/lib/userop";
 import { signWithPasskey } from "@/lib/webauthn";
@@ -14,6 +14,8 @@ type ChainState = {
   bolt: bigint;
   masterMode: boolean;
   level: number;
+  /** v2 身分狀態（IdentityStatus）；舊部署沒有 v2 時為 null */
+  identityStatus: number | null;
   recoveryPending: boolean;
   /** 平台備援金鑰（KYC 通過後安裝；零地址＝尚未啟用） */
   guardian: Address | null;
@@ -36,7 +38,7 @@ type Ctx = {
   setShowBalance: (v: boolean) => void;
 };
 
-const EMPTY: ChainState = { deployed: false, twdc: 0n, bolt: 0n, masterMode: false, level: 0, recoveryPending: false, guardian: null, loaded: false };
+const EMPTY: ChainState = { deployed: false, twdc: 0n, bolt: 0n, masterMode: false, level: 0, identityStatus: null, recoveryPending: false, guardian: null, loaded: false };
 
 const WalletCtx = createContext<Ctx | null>(null);
 
@@ -88,7 +90,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         publicClient.readContract({ address: DEPLOYMENT.twdc, abi: erc20Abi, functionName: "balanceOf", args: [a] }),
         publicClient.getBalance({ address: a }),
         publicClient.readContract({ address: DEPLOYMENT.keyring, abi: keyringValidatorAbi, functionName: "accountState", args: [a] }),
-        publicClient.readContract({ address: DEPLOYMENT.attestation, abi: attestationRegistryAbi, functionName: "levelOf", args: [a] }),
+        // 有 v2 時以 v2 的有效等級為準（撤銷、暫停都會降為 0）
+        DEPLOYMENT.identityRegistry
+          ? publicClient
+              .readContract({ address: DEPLOYMENT.identityRegistry, abi: identityRegistryAbi, functionName: "statusOf", args: [a] })
+              .then((r) => ({ level: r[2], status: r[3] as number | null }))
+          : publicClient
+              .readContract({ address: DEPLOYMENT.attestation, abi: attestationRegistryAbi, functionName: "levelOf", args: [a] })
+              .then((level) => ({ level, status: null as number | null })),
         publicClient.readContract({ address: DEPLOYMENT.recovery, abi: recoveryValidatorAbi, functionName: "isPending", args: [a] }),
         publicClient.readContract({ address: DEPLOYMENT.recovery, abi: recoveryValidatorAbi, functionName: "guardianOf", args: [a] }),
       ]);
@@ -97,7 +106,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         twdc,
         bolt,
         masterMode: st[1] > 0,
-        level: att,
+        level: att.level,
+        identityStatus: att.status,
         recoveryPending: pending,
         guardian: guardian === zeroAddress ? null : guardian,
         loaded: true,

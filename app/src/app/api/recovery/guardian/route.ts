@@ -1,5 +1,5 @@
 import { encodeFunctionData, getAddress, isAddress, isHex, type Hex } from "viem";
-import { DEPLOYMENT } from "@/lib/config";
+import { DEPLOYMENT, IdentityStatus } from "@/lib/config";
 import { attestationRegistryAbi, recoveryValidatorAbi } from "@/lib/contracts/abis";
 import { execCall } from "@/lib/userop";
 import { prepareUserOp, sendUserOp } from "@/server/bundler";
@@ -7,6 +7,7 @@ import { publicClient } from "@/server/chain";
 import { currentGuardian, guardianAddress, guardianSigner } from "@/server/guardian";
 import { intakeEvidence } from "@/server/kyc";
 import { runPipeline, sameSubject } from "@/server/kyc-pipeline";
+import { identityState } from "@/server/identity";
 import { handle, HttpError } from "@/server/session";
 import { read, update } from "@/server/store";
 
@@ -30,6 +31,8 @@ export const POST = handle(async (req: Request) => {
     args: [a],
   });
   if (level < 2) throw new HttpError(403, "此身分沒有完成實名驗證，平台沒有備援金鑰可以協助恢復");
+  // v2 被撤銷（例如證據偽造）時不協助恢復；因前一次恢復而暫停的仍可重新驗證
+  if ((await identityState(a))?.status === IdentityStatus.REVOKED) throw new HttpError(403, "此身分的實名證明已被撤銷，無法以平台備援金鑰恢復");
   const guardian = await currentGuardian(a);
   if (guardian.toLowerCase() !== guardianAddress(a).toLowerCase()) {
     throw new HttpError(403, "此身分尚未啟用平台備援金鑰");

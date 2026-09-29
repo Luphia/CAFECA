@@ -11,6 +11,8 @@ export type Deployment = {
   channelValidator: Address;
   channelManager: Address;
   attestation: Address;
+  /** IdentityRegistry v2（規格 §16.2）；舊部署沒有時為 undefined，程式退回讀 v1 */
+  identityRegistry?: Address;
   deviceDirectory: Address;
   paymaster: Address;
   twdc: Address;
@@ -73,3 +75,17 @@ export const OP_KIND_LABEL: Record<number, string> = {
   18: "恢復：新增裝置",
   19: "啟用平台備援金鑰",
 };
+
+/** v2 身分狀態（IdentityRegistry.Status） */
+export const IdentityStatus = { NONE: 0, ACTIVE: 1, SUSPENDED: 2, REVOKED: 3 } as const;
+export const SignerClass = { NONE: 0, PROTOTYPE: 1, PRODUCTION: 2 } as const;
+/** 撤銷／暫停原因碼（與合約一致） */
+export const IdentityReason = {
+  USER_REQUEST: 1,
+  EVIDENCE_INVALID: 2,
+  ENTITY_DISSOLVED: 3,
+  REPRESENTATIVE_CHANGED: 4,
+  RECOVERED: 5,
+  SIGNER_RETIRED: 6,
+  OTHER: 255,
+} as const;

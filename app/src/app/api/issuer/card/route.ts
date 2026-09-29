@@ -1,8 +1,9 @@
 import { encodeAbiParameters, keccak256, toHex, zeroHash, type Hex } from "viem";
 import { DEPLOYMENT } from "@/lib/config";
-import { attestationRegistryAbi, keyringValidatorAbi } from "@/lib/contracts/abis";
+import { keyringValidatorAbi } from "@/lib/contracts/abis";
 import { publicClient, signerOf } from "@/server/chain";
 import { env } from "@/server/env";
+import { effectiveLevel } from "@/server/identity";
 import { handle, HttpError, requireSession } from "@/server/session";
 import { settleOrders } from "@/server/cards";
 import { update } from "@/server/store";
@@ -16,12 +17,8 @@ import { update } from "@/server/store";
 export const POST = handle(async (req: Request) => {
   const me = await requireSession();
   const { qx, qy, rpIdHash, replacesKeyId } = (await req.json()) as { qx: Hex; qy: Hex; rpIdHash: Hex; replacesKeyId?: Hex };
-  const level = await publicClient.readContract({
-    address: DEPLOYMENT.attestation,
-    abi: attestationRegistryAbi,
-    functionName: "levelOf",
-    args: [me],
-  });
+  // 以 v2 的有效等級為準：撤銷、暫停、簽章者失效的身分不能購買或綁定實體卡
+  const level = await effectiveLevel(me);
   if (level < 2) throw new HttpError(403, "需先完成實名驗證才能取得實體卡");
   const replaces = replacesKeyId ?? zeroHash;
   if (replaces !== zeroHash) {

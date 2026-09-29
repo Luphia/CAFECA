@@ -10,14 +10,14 @@
  * 不需要 API key、不需要向 CAFECA 註冊，也不會把使用者的登入告訴 CAFECA 伺服器。
  */
 import { createPublicClient, hashMessage, hashTypedData, http, type Address, type Hex, type TypedDataDefinition } from "viem";
-import { verifySignInResponse, type SignInResponse, type VerifiedSignIn } from "../src/lib/signin";
+import { readKycStatus, verifySignInResponse, type KycStatus, type SignInResponse, type VerifiedSignIn } from "../src/lib/signin";
 
-export type { SignInResponse, VerifiedSignIn };
+export type { KycStatus, SignInResponse, VerifiedSignIn };
 
 export type CafecaConfiguration = {
   issuer: string;
   chain: { id: number; rpc: string };
-  contracts: { factory: Address; keyring: Address; attestation: Address; recovery: Address; twdc?: Address; entryPoint?: Address } | null;
+  contracts: { factory: Address; keyring: Address; attestation: Address; recovery: Address; twdc?: Address; entryPoint?: Address; identityRegistry?: Address | null } | null;
 };
 
 export type VerifierOptions = {
@@ -59,6 +59,7 @@ export function createCafecaVerifier(opts: VerifierOptions) {
         nonce: p.nonce,
         chainId: c.chain.id,
         attestation: c.contracts?.attestation,
+        identityRegistry: c.contracts?.identityRegistry ?? undefined,
         recovery: c.contracts?.recovery,
         now: p.now,
         channelPub: p.channelPub,
@@ -73,6 +74,17 @@ export function createCafecaVerifier(opts: VerifierOptions) {
               },
         readContract: (q) => pc.readContract(q as Parameters<typeof pc.readContract>[0]),
       });
+    },
+
+    /**
+     * 目前的實名狀態（IdentityRegistry v2）：登入之後隨時可以重新查詢，撤銷、暫停、過期都會反映在 effectiveLevel。
+     * 要正式實名時請同時要求 signerClass === "production"。
+     */
+    async identityStatus(account: Address): Promise<KycStatus | null> {
+      const c = await loadConfig();
+      if (!c.contracts?.identityRegistry) return null;
+      const pc = (client ??= createPublicClient({ transport: http(opts.rpcUrl ?? c.chain.rpc) }));
+      return readKycStatus((q) => pc.readContract(q as Parameters<typeof pc.readContract>[0]), c.contracts.identityRegistry, account);
     },
 
     /** 驗證簽章通道回傳的 sign_message 簽章（ERC-1271 isValidSignature(hashMessage)） */

@@ -7,6 +7,10 @@
  * 也會自動產生其餘服務金鑰（paymaster 簽章、發卡方、KYC、Visa 處理商、商家）並寫回 .env.local，
  * 部署結果預設寫入 deployments/boltchain-testnet.local.json（不進 git）；
  * 要更新團隊共用的 deployments/boltchain-testnet.json 時加 --publish（npm run deploy -- --publish）。
+ *
+ * 增量部署 IdentityRegistry v2（規格 §16.2）：npm run deploy -- --identity
+ *   不動工廠與 KeyringValidator（既有身分地址不變），部署 v2、把 v1 仍有效的證明以同一把 KYC 金鑰簽發到 v2，
+ *   並重新部署改讀 v2 的 CafecaPaymaster（取回舊 paymaster 的押金）。完成後重新啟動 npm run dev／start。
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import path from "path";
@@ -25,6 +29,7 @@ import {
   type Hex,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { parseAbiItem } from "viem";
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha256";
 
@@ -94,9 +99,10 @@ async function main() {
   const balance = await pub.getBalance({ address: deployer.address });
   console.log(`chainId ${chainId}，部署者 ${deployer.address}，餘額 ${formatEther(balance)} BOLT`);
   const factoryOnly = process.argv.includes("--factory");
+  const identityOnly = process.argv.includes("--identity");
   const deposit = factoryOnly ? 0n : parseEther(env.PAYMASTER_DEPOSIT ?? "5");
   const stake = factoryOnly ? 0n : parseEther(env.PAYMASTER_STAKE ?? "1");
-  if (balance < deposit + stake + parseEther(factoryOnly ? "0.2" : "1")) {
+  if (!identityOnly && balance < deposit + stake + parseEther(factoryOnly ? "0.2" : "1")) {
     console.error(`\n部署者地址：${deployer.address}`);
     console.error(`請轉入 BOLT 到這個地址（目前 ${formatEther(balance)} BOLT），再執行一次 npm run deploy。`);
     console.error("私鑰已存在 .env.local 的 DEPLOYER_PRIVATE_KEY，請妥善保管。\n");
@@ -156,6 +162,86 @@ async function main() {
     return;
   }
 
+  const kycSigner = privateKeyToAccount(env.KYC_SIGNER_KEY as Hex);
+  const pmSigner = privateKeyToAccount(env.PAYMASTER_SIGNER_KEY as Hex).address;
+  /** KYC_SIGNER_CLASS=PRODUCTION 只在正式 KYC 後台上線、換上 HSM 金鑰後使用；原型期一律 PROTOTYPE */
+  const signerCls = env.KYC_SIGNER_CLASS === "PRODUCTION" ? 2 : 1;
+
+  async function deployPaymaster(entryPoint: Address, registry: Address, channelManager: Address) {
+    const paymaster = await deploy("CafecaPaymaster", [entryPoint, pmSigner, registry, channelManager]);
+    await send(paymaster, "CafecaPaymaster", "setTier", [0, parseEther("5"), 30]);
+    await send(paymaster, "CafecaPaymaster", "setTier", [1, parseEther("15"), 100]);
+    await send(paymaster, "CafecaPaymaster", "setTier", [2, parseEther("50"), 300]);
+    await send(paymaster, "CafecaPaymaster", "deposit", [], deposit);
+    await send(paymaster, "CafecaPaymaster", "addStake", [86400], stake);
+    return paymaster;
+  }
+
+  // 增量部署 IdentityRegistry v2：npm run deploy -- --identity
+  if (identityOnly) {
+    if (!existsSync(IN_FILE)) throw new Error("找不到既有部署，請先完整部署");
+    const d = JSON.parse(readFileSync(IN_FILE, "utf8"));
+    if (!d.deployed || d.chainId !== chainId) throw new Error("既有部署不在這條鏈上，請先完整部署");
+    if (d.identityRegistry && !process.argv.includes("--force")) throw new Error(`已經部署過 IdentityRegistry（${d.identityRegistry}）；要重新部署請加 --force`);
+
+    // 1. 取回舊 paymaster 的押金（質押需等 unlockStake 的延遲，留在原處）
+    const oldDeposit = (await pub.readContract({ address: d.paymaster, abi: artifact("CafecaPaymaster").abi, functionName: "getDeposit" })) as bigint;
+    if (oldDeposit > 0n) {
+      await send(d.paymaster, "CafecaPaymaster", "withdrawTo", [deployer.address, oldDeposit]);
+      console.log(`  取回舊 paymaster 押金 ${formatEther(oldDeposit)} BOLT`);
+    }
+    const bal = await pub.getBalance({ address: deployer.address });
+    if (bal < deposit + stake + parseEther("0.5")) {
+      throw new Error(`餘額不足：需要 ${formatEther(deposit + stake + parseEther("0.5"))} BOLT，目前 ${formatEther(bal)} BOLT（部署者 ${deployer.address}）`);
+    }
+
+    // 2. 部署 v2 並登記 KYC 簽章者
+    console.log("部署 IdentityRegistry v2…");
+    const identityRegistry = await deploy("IdentityRegistry", [deployer.address]);
+    await send(identityRegistry, "IdentityRegistry", "setSigner", [kycSigner.address, signerCls]);
+    console.log(`  KYC 簽章者 ${kycSigner.address} → ${signerCls === 2 ? "PRODUCTION" : "PROTOTYPE"}`);
+
+    // 3. 遷移 v1 仍有效的證明（自然人、TW；簽章者等級沿用上面的設定）
+    const migrated = await migrateAttestations(d, identityRegistry);
+    console.log(`  已遷移 ${migrated} 筆 v1 證明`);
+
+    // 4. 改讀 v2 的 paymaster
+    console.log("重新部署 CafecaPaymaster（讀 v2）…");
+    const paymaster = await deployPaymaster(d.entryPoint, identityRegistry, d.channelManager);
+    writeFileSync(OUT_FILE, JSON.stringify({ ...d, identityRegistry, paymaster, paymasterV1: d.paymaster }, null, 2) + "\n");
+    console.log(`完成 ✓ 已寫入 ${path.relative(ROOT, OUT_FILE)}；請重新啟動 npm run dev／start 讓錢包與 bundler 讀到新位址`);
+    return;
+  }
+
+  async function migrateAttestations(d: { attestation: Address; startBlock?: number }, registry: Address) {
+    const v1 = artifact("AttestationRegistry").abi;
+    const v2 = artifact("IdentityRegistry").abi;
+    const ev = parseAbiItem("event Attested(address indexed account, uint8 level, uint48 expiry, bytes32 claimsRoot, address signer)");
+    const head = await pub.getBlockNumber();
+    const accounts = new Set<Address>();
+    for (let from = BigInt(d.startBlock ?? 0); from <= head; from += 10_000n) {
+      const to = from + 9_999n > head ? head : from + 9_999n;
+      for (const l of await pub.getLogs({ address: d.attestation, event: ev, fromBlock: from, toBlock: to })) accounts.add(l.args.account!);
+    }
+    const now = Math.floor(Date.now() / 1000);
+    let n = 0;
+    for (const account of accounts) {
+      const [level, expiry, claimsRoot, signer] = (await pub.readContract({ address: d.attestation, abi: v1, functionName: "attestations", args: [account] })) as [number, number, Hex, Address];
+      if (level === 0 || expiry <= now || signer.toLowerCase() !== kycSigner.address.toLowerCase()) continue;
+      const nonce = ((await pub.readContract({ address: registry, abi: v2, functionName: "nonceOf", args: [account] })) as bigint) + 1n;
+      const digest = (await pub.readContract({
+        address: registry,
+        abi: v2,
+        functionName: "attestDigest",
+        args: [account, 0, level, expiry, claimsRoot, "0x5457", nonce],
+      })) as Hex;
+      const sig = await kycSigner.sign({ hash: digest });
+      await send(registry, "IdentityRegistry", "attest", [account, 0, level, expiry, claimsRoot, "0x5457", nonce, sig]);
+      n++;
+    }
+    return n;
+  }
+
   const startBlock = Number(await pub.getBlockNumber());
   console.log("部署合約…");
   const entryPoint = await deploy("EntryPoint");
@@ -183,18 +269,14 @@ async function main() {
     parseUnits("10000", 6),
     parseUnits("30000", 6),
   ]);
-  const pmSigner = privateKeyToAccount(env.PAYMASTER_SIGNER_KEY as Hex).address;
-  const paymaster = await deploy("CafecaPaymaster", [entryPoint, pmSigner, attestation, channelManager]);
+  const identityRegistry = await deploy("IdentityRegistry", [deployer.address]);
 
   console.log("設定權限與 paymaster…");
   await send(attestation, "AttestationRegistry", "setCardIssuer", [privateKeyToAccount(env.CARD_ISSUER_KEY as Hex).address, true]);
   await send(attestation, "AttestationRegistry", "setKycSigner", [privateKeyToAccount(env.KYC_SIGNER_KEY as Hex).address, true]);
   await send(attestation, "AttestationRegistry", "setGuardianAuthority", [privateKeyToAccount(env.GUARDIAN_ROOT_KEY as Hex).address, true]);
-  await send(paymaster, "CafecaPaymaster", "setTier", [0, parseEther("5"), 30]);
-  await send(paymaster, "CafecaPaymaster", "setTier", [1, parseEther("15"), 100]);
-  await send(paymaster, "CafecaPaymaster", "setTier", [2, parseEther("50"), 300]);
-  await send(paymaster, "CafecaPaymaster", "deposit", [], deposit);
-  await send(paymaster, "CafecaPaymaster", "addStake", [86400], stake);
+  await send(identityRegistry, "IdentityRegistry", "setSigner", [kycSigner.address, signerCls]);
+  const paymaster = await deployPaymaster(entryPoint, identityRegistry, channelManager);
 
   const out = {
     chainId,
@@ -207,6 +289,7 @@ async function main() {
     channelValidator,
     channelManager,
     attestation,
+    identityRegistry,
     deviceDirectory,
     paymaster,
     twdc,

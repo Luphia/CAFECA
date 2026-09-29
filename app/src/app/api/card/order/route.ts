@@ -1,9 +1,9 @@
 import { decodeEventLog, erc20Abi, isHex, parseUnits, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { CARD_PRICE_TWDC, DEPLOYMENT, TWDC_DECIMALS } from "@/lib/config";
-import { attestationRegistryAbi } from "@/lib/contracts/abis";
 import { publicClient } from "@/server/chain";
 import { env } from "@/server/env";
+import { effectiveLevel } from "@/server/identity";
 import { handle, HttpError, requireSession } from "@/server/session";
 import { settleOrders } from "@/server/cards";
 import { read, update } from "@/server/store";
@@ -27,12 +27,8 @@ export const POST = handle(async (req: Request) => {
   const me = await requireSession();
   const { txHash } = (await req.json()) as { txHash: Hex };
   if (!isHex(txHash) || txHash.length !== 66) throw new HttpError(400, "交易雜湊格式錯誤");
-  const level = await publicClient.readContract({
-    address: DEPLOYMENT.attestation,
-    abi: attestationRegistryAbi,
-    functionName: "levelOf",
-    args: [me],
-  });
+  // 以 v2 的有效等級為準：撤銷、暫停、簽章者失效的身分不能購買或綁定實體卡
+  const level = await effectiveLevel(me);
   if (level < 2) throw new HttpError(403, "需先完成實名驗證（證件＋臉部影像）才能購買實體卡");
   if ((await read()).cardOrders[txHash.toLowerCase()]) throw new HttpError(409, "這筆付款已經使用過");
 

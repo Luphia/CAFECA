@@ -8,6 +8,7 @@ const names = {
   ChannelManager: "ChannelManager.sol/ChannelManager",
   AttestationRegistry: "AttestationRegistry.sol/AttestationRegistry", DeviceDirectory: "DeviceDirectory.sol/DeviceDirectory",
   CafecaPaymaster: "CafecaPaymaster.sol/CafecaPaymaster",
+  IdentityRegistry: "IdentityRegistry.sol/IdentityRegistry",
   TestStable: "TestStable.sol/TestStable",
 };
 const ts = ["// 由 contracts/out 自動產生，請勿手動編輯", ""];

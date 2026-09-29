@@ -178,6 +178,8 @@ export type VerifyOptions = {
   readContract: (p: { address: Address; abi: readonly unknown[]; functionName: string; args: readonly unknown[] }) => Promise<unknown>;
   chainId: number;
   attestation?: Address;
+  /** IdentityRegistry v2（有提供時 kyc_level 以 v2 為準，並回傳主體類型、狀態、簽章者等級） */
+  identityRegistry?: Address;
   recovery?: Address;
   /** 向 CAFECA 查詢帳戶目前的代稱（代稱存在 CAFECA 伺服器、不上鏈）；未提供時只採用回應裡自稱的代稱 */
   lookupHandle?: (account: Address) => Promise<string | null>;
@@ -189,11 +191,24 @@ export type VerifyOptions = {
 export type VerifiedSignIn = {
   account: Address;
   /** handleVerified=false 表示代稱只是回應裡自稱的，未經 CAFECA 確認，只能拿來顯示 */
-  claims: { kyc_level?: number; handle?: string | null; handleVerified?: boolean };
+  claims: { kyc_level?: number; handle?: string | null; handleVerified?: boolean; kyc?: KycStatus };
   recoveryPending?: boolean;
   expiresAt: number;
   /** 使用者同意開啟的簽章通道（已由登入簽章背書） */
   channel?: SignInChannel;
+};
+
+/** v2 身分狀態（規格 §16.2）。依賴方要正式實名時應要求 signerClass === "PRODUCTION" */
+export type KycStatus = {
+  subjectType: "person" | "entity";
+  level: number;
+  effectiveLevel: number;
+  status: "none" | "active" | "suspended" | "revoked";
+  expiry: number;
+  jurisdiction: string;
+  nonce: string;
+  signer: Address;
+  signerClass: "none" | "prototype" | "production";
 };
 
 export type SignInChannel = { id: string; sitePub: string; walletPub: string; expiresAt: number };
@@ -215,6 +230,46 @@ const ERC1271_ABI = [
 const LEVEL_ABI = [
   { type: "function", name: "levelOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint8" }] },
 ] as const;
+const STATUS_ABI = [
+  {
+    type: "function",
+    name: "statusOf",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [
+      { name: "subjectType", type: "uint8" },
+      { name: "level", type: "uint8" },
+      { name: "effectiveLevel", type: "uint8" },
+      { name: "status", type: "uint8" },
+      { name: "expiry", type: "uint48" },
+      { name: "issuedAt", type: "uint48" },
+      { name: "jurisdiction", type: "bytes2" },
+      { name: "nonce", type: "uint64" },
+      { name: "signer", type: "address" },
+      { name: "signerCls", type: "uint8" },
+      { name: "claimsRoot", type: "bytes32" },
+    ],
+  },
+] as const;
+
+export async function readKycStatus(readContract: VerifyOptions["readContract"], registry: Address, account: Address): Promise<KycStatus> {
+  const r = (await readContract({ address: registry, abi: STATUS_ABI, functionName: "statusOf", args: [account] })) as readonly [
+    number, number, number, number, number, number, Hex, bigint, Address, number, Hex,
+  ];
+  const j = r[6] === "0x0000" ? "" : String.fromCharCode(parseInt(r[6].slice(2, 4), 16), parseInt(r[6].slice(4, 6), 16));
+  return {
+    subjectType: r[0] === 1 ? "entity" : "person",
+    level: Number(r[1]),
+    effectiveLevel: Number(r[2]),
+    status: (["none", "active", "suspended", "revoked"] as const)[Number(r[3])] ?? "none",
+    expiry: Number(r[4]),
+    jurisdiction: j,
+    nonce: r[7].toString(),
+    signer: r[8],
+    signerClass: (["none", "prototype", "production"] as const)[Number(r[9])] ?? "none",
+  };
+}
+
 const PENDING_ABI = [
   { type: "function", name: "isPending", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "bool" }] },
 ] as const;
@@ -238,7 +293,10 @@ export async function verifySignInResponse(res: SignInResponse, o: VerifyOptions
 
   const granted = m.claims ? m.claims.split(",") : [];
   const claims: VerifiedSignIn["claims"] = {};
-  if (granted.includes("kyc_level") && o.attestation) {
+  if (granted.includes("kyc_level") && o.identityRegistry) {
+    claims.kyc = await readKycStatus(o.readContract, o.identityRegistry, res.account);
+    claims.kyc_level = claims.kyc.effectiveLevel;
+  } else if (granted.includes("kyc_level") && o.attestation) {
     claims.kyc_level = Number(await o.readContract({ address: o.attestation, abi: LEVEL_ABI, functionName: "levelOf", args: [res.account] }));
   }
   if (granted.includes("handle")) {

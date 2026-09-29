@@ -146,6 +146,8 @@ function Recover() {
       const res = await submitOp({ sender: rec.address, validator: DEPLOYMENT.recovery, callData, signer: async () => "0x" });
       saveWallet({ address: rec.address, passkeys: [rec.passkey], createdAt: Date.now() });
       localStorage.removeItem(PK);
+      // 恢復後更新實名證明（以恢復時的重新驗證重新簽發，或暫停待重驗），依賴方會收到事件
+      fetch("/api/identity/sync", { method: "POST" }).catch(() => undefined);
       toast(<span>恢復完成 <TxLink hash={res.txHash} /></span>, "ok");
       router.replace("/wallet");
     } catch (e) {

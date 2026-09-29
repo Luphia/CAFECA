@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useState } from "react";
 import { encodeFunctionData, type Address, type Hex } from "viem";
-import { DEPLOYMENT } from "@/lib/config";
+import { DEPLOYMENT, IdentityStatus } from "@/lib/config";
 import { recoveryValidatorAbi } from "@/lib/contracts/abis";
 import { api } from "@/lib/client";
 import { runOp } from "@/lib/actions";
@@ -120,6 +120,12 @@ function KycBody() {
 
   return (
     <>
+      {chain.identityStatus === IdentityStatus.SUSPENDED && (
+        <Notice tone="warn">你的實名證明目前暫停中（例如身分恢復後需要重新確認本人）。重新完成下方驗證後就會恢復，網站看到的實名等級也會跟著恢復。</Notice>
+      )}
+      {chain.identityStatus === IdentityStatus.REVOKED && (
+        <Notice tone="danger">你的實名證明已被撤銷。重新完成下方驗證後，會由 KYC 單位重新審核。</Notice>
+      )}
       <Panel title="為什麼要實名驗證？">
         <ul className="list-disc space-y-1 pl-5 text-sm text-ink-2">
           <li>身分等級提升為 L2，可以向商家、網站證明「我是真人、已成年」而不透露個資</li>

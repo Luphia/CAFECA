@@ -75,7 +75,8 @@ export async function prepareUserOp(p: {
   const verificationGas = p.initCode && p.initCode !== "0x" ? 4_000_000n : 2_500_000n;
   const callGas = 1_500_000n;
 
-  const now = Math.floor(Date.now() / 1000);
+  // 以鏈上時間計算贊助效期與每日額度（伺服器時鐘與鏈上時間可能有落差）
+  const now = Number((await publicClient.getBlock()).timestamp);
   const day = Math.floor(now / 86400);
   const validAfter = day * 86400;
   const validUntil = validAfter + 86400;

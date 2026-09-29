@@ -78,7 +78,8 @@ app.post("/api/cafeca/login", async (req, res) => {
   try {
     const user = await cafeca.verify(req.body, { domain: DOMAIN, nonce: saved.nonce });
     // user.account：身分合約地址（唯一 ID）
-    // user.claims.kyc_level：鏈上實名等級（0 未實名、2 已通過證件＋臉部驗證）
+    // user.claims.kyc_level：鏈上有效實名等級（0 未實名、2 已通過證件＋臉部驗證；撤銷、暫停、過期都是 0）
+    // user.claims.kyc：IdentityRegistry v2 的完整狀態（主體類型、狀態、簽章者等級…，見第 9 節）
     // user.claims.handle：CAFECA 代稱（由錢包查詢確認；handleVerified=false 時只能拿來顯示）
     // user.recoveryPending：身分正在恢復中，建議暫停敏感操作
     req.session.userId = user.account;
@@ -160,7 +161,7 @@ SignIn  = (string domain, string uri, string nonce, uint256 issuedAt, uint256 ex
 1. 確認 `message.domain` 與你的 origin **完全相同**，`message.nonce` 是你發出且未使用過的，`chainId` 正確，現在時間早於 `expiresAt`。
 2. 計算 `hash = hashTypedData(domain, SignIn, message)`。
 3. 以 `eth_call` 呼叫 `account.isValidSignature(hash, signature)`，結果必須等於 `0x1626ba7e`。
-4. 若 `claims` 含 `kyc_level`：呼叫 `attestation.levelOf(account)`，取得 `uint8` 等級。
+4. 若 `claims` 含 `kyc_level`：呼叫 `identityRegistry.statusOf(account)`（IdentityRegistry v2，見第 9 節），以 `effectiveLevel` 為等級；正式實名還要求 `signerClass == PRODUCTION`。舊部署沒有 v2 時才讀 `attestation.levelOf(account)`。
 5. 若含 `handle`：呼叫 `GET https://<錢包網域>/api/profile?q=<account>` 取得代稱。代稱存在 CAFECA 伺服器，不上鏈；回應裡自稱的 `claims.handle` 不可信任。
 6. 可選：呼叫 `recovery.isPending(account)`，檢查身分是否正在恢復中。
 7. 若 `message.channel` 不是空字串：確認其中的網站公鑰是你自己產生的（`verify(…, { channelPub })`），到期時間不超過登入時間加 30 天。
@@ -365,7 +366,58 @@ EIP-712 的數值請使用 `number` 或十進位字串，不要傳 `bigint`（�
 
 需要**不經使用者逐筆確認**的定期扣款或 AI 代付，請改用支出通道（規格 §6）：在鏈上預先設定額度，由代理人自行簽署。
 
-### 9. 範例網站
+### 9. 實名等級、撤銷與事件（IdentityRegistry v2）
+
+依賴方（例如交易所）要把 CAFECA 的實名結果用在自己的業務上時，一律讀 **IdentityRegistry v2**。位址見 `/.well-known/cafeca-configuration` 的 `contracts.identityRegistry`。
+
+> **目前所有 L2 都是原型簽章。** KYC 後台還只做結構檢查就放行（OCR、活體重檢、人臉比對尚未接上），簽章者等級為 `PROTOTYPE`。正式上線時會換一把新的 kycSigner（`PRODUCTION`），並把原型簽章者移除；原型期的 L2 屆時一律降為 0，需要重新驗證。
+
+**等級語意**
+
+| 等級 | 意義 |
+| --- | --- |
+| L0 | 未實名；或證明已過期、已撤銷、已暫停、簽章者已失效 |
+| L1 | 手機驗證。**不是實名**，依賴方不應視為已確認身分 |
+| L2 | 自然人：身分證正反面＋6 動作活體影像，後台比對本人（原型期見上方說明） |
+
+- 效期一年，過期自動視為 L0。
+- `subjectType`：0 自然人、1 法人。**自然人的 L2 不等於法人**，法人證明另行簽發（規格 §16.4，尚未上線）。
+
+**讀取**
+
+```ts
+const s = await cafeca.identityStatus(account); // app/sdk/cafeca-verify.ts
+// { subjectType: "person", level: 2, effectiveLevel: 2, status: "active", expiry, jurisdiction: "TW",
+//   nonce: "1", signer: "0x…", signerClass: "prototype" }
+const isVerifiedPerson = s?.subjectType === "person" && s.effectiveLevel === 2 && s.signerClass === "production";
+```
+
+合約介面：`statusOf(account)`、`levelOf(account)`（有效等級，含原型）、`productionLevelOf(account)`（只計入正式簽章者）、`nonceOf(account)`。
+
+**事件格式**（固定；依賴方可以鏡像進自己的帳本，查核時直接以鏈上 log 重播）
+
+```
+Attested(address indexed account, uint8 subjectType, uint8 level, uint48 expiry, bytes32 claimsRoot, bytes2 jurisdiction, address signer, uint64 nonce)
+Suspended(address indexed account, uint8 reason, address by, uint64 nonce)
+Revoked(address indexed account, uint8 reason, address by, uint64 nonce)
+SignerSet(address indexed signer, uint8 signerClass)   // 0 NONE、1 PROTOTYPE、2 PRODUCTION
+```
+
+- 每個帳戶的 `nonce` 從 1 起遞增，`Attested`／`Suspended`／`Revoked` 共用同一個序列。依賴方只要保留最大 nonce 的那筆事件，就是目前狀態。
+- 新的 `Attested` 會覆蓋之前的暫停或撤銷（例如使用者重新驗證通過）。
+- 簽章者被移除（`SignerSet(..., 0)`）時，該簽章者簽發的證明全部失效，不會個別發出 `Revoked`；鏡像時請一併處理 `SignerSet`。
+
+**原因碼**：1 使用者要求、2 證據異常、3 法人解散／撤銷／停業、4 法人代表人異動待重驗、5 身分恢復後待重驗、6 簽章者退役、255 其他。
+
+**身分恢復之後**
+
+- 以平台備援金鑰恢復時，使用者已在新裝置重新即時拍證件＋錄活體影像，後台確認是同一人。恢復執行後，CAFECA 以這次重新驗證**重新簽發**證明（nonce 遞增，發出新的 `Attested`）。
+- 找不到有效的重新驗證時，證明會被**暫停**（`Suspended`，原因碼 5），直到使用者重新驗證。
+- 依賴方也可以直接監聽 `RecoveryValidator.RecoveryExecuted(address indexed account, bytes32 newKeyId)`，自行決定是否暫停帳戶。
+
+**舊版 AttestationRegistry（v1）**：只保留給 CAFECA 內部的綁卡門檻使用。v1 沒有 nonce、不能撤銷，而且**舊簽章可以被任何人重送**（撤銷後重送就會恢復成 L2），依賴方不應再讀 v1。
+
+### 10. 範例網站
 
 ```bash
 cd app
@@ -381,4 +433,7 @@ npm run demo:signin    # 範例第三方網站「咖啡豆小舖」：http://loc
 - `RPC_URL`：驗證用的 RPC
 - `PORT`：範例網站的連接埠
 
-錢包端的 `/.well-known/cafeca-configuration` 會以 `PUBLIC_RPC_URL`（預設 `https://boltchain.cafeca.io`）作為公開 RPC，並以 `PUBLIC_ORIGIN` 作為對外網址。
+錢包端的 `/.well-known/cafeca-configuration`：
+
+- 對外網址：`PUBLIC_ORIGIN`（例：`https://cafeca.io`）。沒有設定時依反向代理的 `X-Forwarded-Host`／`X-Forwarded-Proto` 推算；部署在代理後方請務必設定，否則可能公布成 `http://localhost:10002`。
+- 公開 RPC：`PUBLIC_RPC_URL`。沒有設定時公布錢包自己的唯讀 RPC 代理 `<PUBLIC_ORIGIN>/api/rpc`（只允許 `eth_call`、`eth_getLogs` 等讀取方法，開放 CORS）。`https://boltchain.cafeca.io` 是區塊鏈瀏覽器，不是 RPC。
