@@ -38,7 +38,7 @@ function useChannels(account: Address): ChannelRecord[] {
   );
 }
 
-const CLAIM_LABEL: Record<string, string> = { kyc_level: "實名等級", handle: "代稱", legal_name: "姓名", doc_type: "證件類型", nationality: "國籍", pairwise_id: "同一人識別碼" };
+const CLAIM_LABEL: Record<string, string> = { kyc_level: "實名等級", handle: "代稱", legal_name: "姓名", doc_type: "證件類型", nationality: "國籍", pairwise_id: "同一人識別碼", entity_ubn: "公司統編", entity_name: "公司名稱" };
 
 /** 曾以 CAFECA 身分登入的網站（只記在這台裝置；每次登入都要重新簽署，沒有長期授權可以撤銷） */
 export function SignInHistory({ account }: { account: Address }) {

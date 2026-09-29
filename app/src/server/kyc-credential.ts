@@ -30,13 +30,19 @@ export type AvailableClaims = {
   doc_type: DocType | null;
   nationality: string | null;
   pairwise_id: boolean;
+  /** 以公司身分登入時 */
+  entity_ubn: string | null;
+  entity_name: string | null;
 };
 
-type Source = { name?: string; docType?: DocType; nationality?: string; idHash?: string };
+type Source = { name?: string; docType?: DocType; nationality?: string; idHash?: string; entityUbn?: string; entityName?: string };
 
 /** 目前實名證明所依據的案件：最新一筆核准、而且有擷取欄位的案件（恢復後重新驗證的案件會取代開戶案件） */
 async function sourceOf(account: Address): Promise<Source | null> {
   const s = await read();
+  // 法人帳戶：資料來自已通過的商工登記驗證（暫停或撤銷時 identityState 會擋下）
+  const ent = s.entities?.[account.toLowerCase()];
+  if (ent) return ent.verified ? { entityUbn: ent.verified.ubn, entityName: ent.verified.name } : null;
   const rec = Object.entries(s.kyc).find(([k]) => k.toLowerCase() === account.toLowerCase())?.[1];
   if (!rec || rec.level < 2) return null;
   const c = (rec.cases ?? [])
@@ -70,6 +76,8 @@ export async function availableClaims(account: Address): Promise<AvailableClaims
     doc_type: src?.docType ?? null,
     nationality: src?.nationality ?? null,
     pairwise_id: !!src?.idHash && !!env.pairwiseKey(),
+    entity_ubn: src?.entityUbn ?? null,
+    entity_name: src?.entityName ?? null,
   };
 }
 
@@ -86,6 +94,8 @@ export async function issueCredential(account: Address, p: { audience: string; n
     doc_type: src.docType ?? null,
     nationality: src.nationality ?? null,
     pairwise_id: pid,
+    entity_ubn: src.entityUbn ?? null,
+    entity_name: src.entityName ?? null,
   };
   const disclosed = want.filter((c) => value[c]);
   if (!disclosed.length) return null;
@@ -102,8 +112,17 @@ export async function issueCredential(account: Address, p: { audience: string; n
     docType: has("doc_type") ? value.doc_type! : "",
     nationality: has("nationality") ? value.nationality! : "",
     pairwiseId: has("pairwise_id") ? (pid as Hex) : ZERO32,
+    entityUbn: has("entity_ubn") ? value.entity_ubn! : "",
+    entityName: has("entity_name") ? value.entity_name! : "",
     disclosed: disclosedString(disclosed),
   };
   const signature = await signerOf(env.kycSignerKey()).signTypedData(kycCredentialTypedData(CHAIN_ID, DEPLOYMENT.identityRegistry, message));
   return { message, signature };
+}
+
+/** 帳戶目前實名證明所依據的證件姓名（法人代表人比對用）；沒有有效 L2 時為 null */
+export async function legalNameOf(account: Address): Promise<string | null> {
+  const [src, st] = await Promise.all([sourceOf(account), identityState(account)]);
+  if (!st || st.status !== IdentityStatus.ACTIVE || st.effectiveLevel < 2) return null;
+  return src?.name ?? null;
 }

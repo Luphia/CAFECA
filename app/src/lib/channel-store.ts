@@ -102,6 +102,6 @@ export function guardContext(account: Address): GuardContext {
   return {
     account,
     chainId: CHAIN_ID,
-    protectedContracts: [d.entryPoint, d.accountImpl, d.factory, d.keyring, d.recovery, d.channelValidator, d.channelManager, d.attestation, d.deviceDirectory, d.paymaster].filter(Boolean),
+    protectedContracts: [d.entryPoint, d.accountImpl, d.factory, d.keyring, d.recovery, d.channelValidator, d.channelManager, d.attestation, d.deviceDirectory, d.paymaster, d.identityRegistry, d.memberValidator, d.entityFactory].filter((a): a is Address => !!a),
   };
 }

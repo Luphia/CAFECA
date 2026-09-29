@@ -14,6 +14,9 @@ export type Deployment = {
   /** IdentityRegistry v2（規格 §16.2）；舊部署沒有時為 undefined，程式退回讀 v1 */
   identityRegistry?: Address;
   deviceDirectory: Address;
+  /** 法人帳戶（規格 §16.4）；舊部署沒有時為 undefined（npm run deploy -- --entity 增量部署） */
+  memberValidator?: Address;
+  entityFactory?: Address;
   paymaster: Address;
   twdc: Address;
   startBlock: number;

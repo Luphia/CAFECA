@@ -14,7 +14,10 @@ import { hashTypedData, type Address, type Hex } from "viem";
  */
 
 /** 需要 KYC Credential 才能提供的 claims */
-export const CREDENTIAL_CLAIMS = ["legal_name", "doc_type", "nationality", "pairwise_id"] as const;
+export const CREDENTIAL_CLAIMS = ["legal_name", "doc_type", "nationality", "pairwise_id", "entity_ubn", "entity_name"] as const;
+/** 自然人才有的 claims；法人帳戶（以公司身分登入）只提供 entity_ubn、entity_name */
+export const PERSON_CLAIMS = ["legal_name", "doc_type", "nationality", "pairwise_id"] as const;
+export const ENTITY_CLAIMS = ["entity_ubn", "entity_name"] as const;
 export type CredentialClaim = (typeof CREDENTIAL_CLAIMS)[number];
 
 export const CREDENTIAL_TTL = 10 * 60;
@@ -33,6 +36,9 @@ export type KycCredentialMessage = {
   docType: string;
   nationality: string;
   pairwiseId: Hex; // 未提供時為 0x00…00
+  /** 法人（以公司身分登入時）：統一編號與登記名稱 */
+  entityUbn: string;
+  entityName: string;
   /** 這份 credential 揭露的 claims，逗號分隔並排序 */
   disclosed: string;
 };
@@ -53,6 +59,8 @@ export const KYC_CREDENTIAL_TYPES = {
     { name: "docType", type: "string" },
     { name: "nationality", type: "string" },
     { name: "pairwiseId", type: "bytes32" },
+    { name: "entityUbn", type: "string" },
+    { name: "entityName", type: "string" },
     { name: "disclosed", type: "string" },
   ],
 } as const;

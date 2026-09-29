@@ -168,6 +168,7 @@ function page(twdc: string, chainId: number) {
   <div class="card" id="in">
     <label><input type="checkbox" id="c-kyc" checked> 要求實名等級（kyc_level）</label>
     <label><input type="checkbox" id="c-id"> 要求實名資料（legal_name、doc_type、nationality、pairwise_id）</label>
+    <label><input type="checkbox" id="c-ent"> 要求公司資料（entity_ubn、entity_name；以公司身分登入時）</label>
     <label><input type="checkbox" id="c-handle" checked> 要求代稱（handle）</label>
     <label><input type="checkbox" id="c-channel" checked> 開啟簽章通道（之後可請你簽署與付款）</label>
     <button class="cafeca" id="popup">以 CAFECA 登入（彈出視窗）</button>
@@ -191,7 +192,7 @@ function page(twdc: string, chainId: number) {
   const cafeca = CafecaConnect.create({ wallet: ${JSON.stringify(WALLET)} });
   const TWDC = ${JSON.stringify(twdc)}, SHOP = ${JSON.stringify(SHOP)}, CHAIN_ID = ${chainId};
   const $ = (id) => document.getElementById(id);
-  const claims = () => [$("c-kyc").checked && "kyc_level", $("c-handle").checked && "handle", ...($("c-id").checked ? ["legal_name", "doc_type", "nationality", "pairwise_id"] : [])].filter(Boolean);
+  const claims = () => [$("c-kyc").checked && "kyc_level", $("c-handle").checked && "handle", ...($("c-id").checked ? ["legal_name", "doc_type", "nationality", "pairwise_id"] : []), ...($("c-ent").checked ? ["entity_ubn", "entity_name"] : [])].filter(Boolean);
   const esc = (v) => String(v).replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
   const wantChannel = () => $("c-channel").checked;
   const getNonce = () => fetch("/api/nonce", { method: "POST" }).then((r) => r.json()).then((j) => j.nonce);
@@ -216,6 +217,9 @@ function page(twdc: string, chainId: number) {
     $("out").innerHTML = u
       ? '<b data-testid="demo-user">已登入</b><div><code id="acct">' + u.account + '</code></div>' +
         '<div class="muted">實名等級：<span id="kyc">' + (u.claims.kyc_level ?? "未提供") + '</span>　代稱：<span id="handle">' + (u.claims.handle ?? "未提供") + '</span></div>' +
+        (u.claims.kyc && u.claims.kyc.subjectType === "entity"
+          ? '<div class="muted">身分類型：<b id="subject">公司</b>　統編：<span id="entity-ubn">' + esc(u.claims.entity_ubn ?? "未提供") + '</span>　名稱：<span id="entity-name">' + esc(u.claims.entity_name ?? "未提供") + '</span></div>'
+          : '') +
         (u.claims.legal_name !== undefined || u.claims.pairwise_id !== undefined
           ? '<div class="muted">姓名：<span id="legal-name">' + esc(u.claims.legal_name ?? "未提供") + '</span>　證件：<span id="doc-type">' + esc(u.claims.doc_type ?? "未提供") + '</span>　國籍：<span id="nationality">' + esc(u.claims.nationality ?? "未提供") + '</span></div>' +
             '<div class="muted">同一人識別碼：<code id="pairwise">' + esc(u.claims.pairwise_id ? u.claims.pairwise_id.slice(0, 18) + "…" : "未提供") + '</code>' +

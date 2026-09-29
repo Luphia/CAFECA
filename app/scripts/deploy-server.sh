@@ -11,6 +11,7 @@
 #   PUBLIC_ORIGIN      對外網址，例 https://cafeca.io（第一次必填，之後從 .env.local 讀）
 #   SKIP_PULL=1        不執行 git pull
 #   SKIP_IDENTITY=1    不自動執行 npm run deploy -- --identity
+#   SKIP_ENTITY=1      不自動執行 npm run deploy -- --entity（法人帳戶合約）
 #   SKIP_CRON=1        不建立 /api/identity/sync 的 crontab
 #   PM2_NAME=cafeca    以 pm2 管理時的程序名稱（預設 cafeca）
 #   SYSTEMD_UNIT=xxx   以 systemd 管理時的服務名稱（設定後改用 systemctl restart）
@@ -119,6 +120,21 @@ else
   npm run deploy -- --identity
 fi
 
+# ───────────────────────── 5b. 法人帳戶合約 ─────────────────────────
+step "法人帳戶合約（MemberValidator＋EntityAccountFactory）"
+dep_file="deployments/boltchain-testnet.local.json"
+[ -f "$dep_file" ] || dep_file="deployments/boltchain-testnet.json"
+if node -e "process.exit(require('./$dep_file').entityFactory ? 0 : 1)" 2>/dev/null; then
+  ok "已部署：$(node -p "require('./$dep_file').entityFactory")"
+elif [ "${SKIP_ENTITY:-}" = "1" ]; then
+  warn "SKIP_ENTITY=1，略過（公司帳戶功能不會啟用）"
+elif ! node -e "process.exit(require('./$dep_file').identityRegistry ? 0 : 1)" 2>/dev/null; then
+  warn "需要先部署 IdentityRegistry v2，略過"
+else
+  warn "尚未部署，執行 npm run deploy -- --entity（不影響既有身分）"
+  npm run deploy -- --entity
+fi
+
 # ───────────────────────── 6. 建置 ─────────────────────────
 step "npm run build（合約地址在建置時寫入，部署合約後一定要重新建置）"
 npm run build
@@ -138,13 +154,14 @@ else
 fi
 
 # ───────────────────────── 8. 排程 ─────────────────────────
-step "排程 /api/identity/sync（恢復後重新簽發或暫停實名證明）"
+step "排程 /api/identity/sync（恢復後重新簽發或暫停實名證明）與 /api/entity/sync（法人每日監控）"
 cron_line="*/5 * * * * curl -fsS -X POST $origin/api/identity/sync > /dev/null 2>&1 # cafeca-identity-sync"
+cron_entity="17 3 * * * curl -fsS -X POST $origin/api/entity/sync > /dev/null 2>&1 # cafeca-entity-sync"
 if [ "${SKIP_CRON:-}" = "1" ]; then
   warn "SKIP_CRON=1，略過"
 elif command -v crontab >/dev/null; then
-  ( crontab -l 2>/dev/null | grep -v "# cafeca-identity-sync" ; echo "$cron_line" ) | crontab -
-  ok "crontab：每 5 分鐘"
+  ( crontab -l 2>/dev/null | grep -v "# cafeca-identity-sync" | grep -v "# cafeca-entity-sync" ; echo "$cron_line" ; echo "$cron_entity" ) | crontab -
+  ok "crontab：身分同步每 5 分鐘、法人商工登記監控每天 03:17"
 else
   warn "沒有 crontab，請自行每 5 分鐘呼叫：curl -X POST $origin/api/identity/sync"
 fi

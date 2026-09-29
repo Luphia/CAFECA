@@ -1,3 +1,5 @@
+import { getAddress, isAddress, type Address } from "viem";
+import { Role, roleOf } from "@/server/entity";
 import { availableClaims, issueCredential } from "@/server/kyc-credential";
 import { handle, HttpError, requireSession } from "@/server/session";
 
@@ -30,21 +32,33 @@ function originOf(u: unknown): string | null {
   }
 }
 
+/** 要提供資料的帳戶：本人，或本人所屬的法人帳戶（以公司身分登入） */
+async function subjectOf(me: Address, account: unknown): Promise<Address> {
+  if (account === undefined || account === null || account === "") return me;
+  if (typeof account !== "string" || !isAddress(account)) throw new HttpError(400, "account 格式錯誤");
+  const a = getAddress(account);
+  if (a === me) return me;
+  if ((await roleOf(me, a).catch(() => Role.NONE)) === Role.NONE) throw new HttpError(403, "你不是這個法人帳戶的成員");
+  return a;
+}
+
 export const GET = handle(async (req: Request) => {
   sameOrigin(req);
   const me = await requireSession();
-  return Response.json(await availableClaims(me), { headers: { "cache-control": "no-store" } });
+  const subject = await subjectOf(me, new URL(req.url).searchParams.get("account"));
+  return Response.json(await availableClaims(subject), { headers: { "cache-control": "no-store" } });
 });
 
 export const POST = handle(async (req: Request) => {
   sameOrigin(req);
   const me = await requireSession();
-  const body = (await req.json().catch(() => null)) as { audience?: unknown; nonce?: unknown; claims?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as { audience?: unknown; nonce?: unknown; claims?: unknown; account?: unknown } | null;
+  const subject = await subjectOf(me, body?.account);
   const audience = originOf(body?.audience);
   if (!audience) throw new HttpError(400, "audience 必須是網站的 origin");
   if (typeof body?.nonce !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(body.nonce)) throw new HttpError(400, "nonce 格式錯誤");
   if (!Array.isArray(body.claims) || body.claims.some((c) => typeof c !== "string")) throw new HttpError(400, "claims 格式錯誤");
-  const credential = await issueCredential(me, { audience, nonce: body.nonce, claims: body.claims as string[] }).catch((e: Error) => {
+  const credential = await issueCredential(subject, { audience, nonce: body.nonce, claims: body.claims as string[] }).catch((e: Error) => {
     throw new HttpError(409, e.message);
   });
   return Response.json({ credential }, { headers: { "cache-control": "no-store" } });

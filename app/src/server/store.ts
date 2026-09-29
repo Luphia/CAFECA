@@ -62,9 +62,49 @@ export type Store = {
   /** 票券（活動、交通等），由票券發行方簽章，持有人以數位身分出示 */
   tickets: Record<string, Ticket>;
   /** 身分狀態同步進度（處理到哪個區塊的 RecoveryExecuted） */
+  /** 法人帳戶（規格 §16.4）：法人地址（小寫）→ 驗證紀錄；一個統編只能綁一個法人帳戶 */
+  entities?: Record<string, EntityRecord>;
   /** 聊天附件（檔案內容在傳送端就以一次性金鑰加密，伺服器只保存密文；金鑰在端對端加密的訊息裡） */
   chatBlobs?: Record<string, { from: string; to: string; size: number; createdAt: number }>;
   identitySync?: { lastBlock: number; log: { account: string; block: number; action: "reattest" | "suspend" | "skip"; tx?: string; at: number }[] };
+};
+
+export type GcisCompany = {
+  ubn: string;
+  name: string;
+  status: string;
+  responsible: string;
+  changeDate: string;
+  setupDate: string;
+  location: string;
+  capital: number;
+  fetchedAt: number;
+};
+
+export type EntityRecord = {
+  entity: string;
+  /** 建立者（第一位 ADMIN） */
+  creator: string;
+  displayName?: string;
+  createdAt: number;
+  /** 最近一次驗證申請 */
+  application?: {
+    id: string;
+    ubn: string;
+    applicant: string;
+    applicantName: string | null;
+    at: number;
+    path: "representative" | "agent";
+    status: "pending" | "review" | "approved" | "rejected";
+    gcis: GcisCompany | null;
+    checks: Record<string, { ok: boolean; detail: string }>;
+    letter?: string;
+    review?: { by: string; at: number; decision: "approved" | "rejected"; note?: string };
+    result?: { txHash?: string; error?: string };
+  };
+  /** 已通過的綁定（統編與登記資料快照）；每日監控以這份快照比對 */
+  verified?: { ubn: string; name: string; responsible: string; changeDate: string; approvedAt: number; txHash?: string };
+  monitor?: { lastCheck: number; status: "ok" | "suspended" | "revoked" | "error"; detail?: string; tx?: string };
 };
 
 export type Ticket = {

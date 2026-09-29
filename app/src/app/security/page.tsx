@@ -277,6 +277,11 @@ function SecurityBody() {
         </div>
       </Panel>
 
+      <Panel title="公司帳戶">
+        <p className="mb-3 text-sm text-ink-2">以商工登記驗證公司，和同事各自用自己的 Passkey 代公司轉帳、以公司身分登入網站。</p>
+        <Link href="/company" className="block"><Button className="w-full" variant="secondary" testId="goto-company">管理公司帳戶</Button></Link>
+      </Panel>
+
       <Panel title="TWDC 額度">
         {current ? (
           <div className="grid grid-cols-2 gap-3 text-sm" data-testid="limits">

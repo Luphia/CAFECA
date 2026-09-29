@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import type { Address, Hex } from "viem";
 import { CHAIN_ID, DEPLOYMENT } from "@/lib/config";
 import { api } from "@/lib/client";
 import { encode1271 } from "@/lib/userop";
+import { entity1271 } from "@/lib/entity";
 import { signWithPasskey } from "@/lib/webauthn";
 import { findSignIn, recordSignIn, subscribeSignIns } from "@/lib/signin-history";
 import { newChannel, storeChannel } from "@/lib/channel-store";
@@ -33,11 +35,27 @@ const CLAIM_LABEL: Record<Claim, string> = {
   doc_type: "證件類型",
   nationality: "國籍",
   pairwise_id: "同一人識別碼",
+  entity_ubn: "公司統一編號",
+  entity_name: "公司登記名稱",
 };
+
+const ENTITY_ONLY = ["entity_ubn", "entity_name"];
+const PERSON_ONLY = ["handle", "legal_name", "doc_type", "nationality", "pairwise_id"];
+
+type MyEntity = { entity: Address; role: number; displayName: string | null; verified: { ubn: string; name: string } | null; monitor: { status: string } | null };
 
 const isCred = (c: string): c is CredentialClaim => (CREDENTIAL_CLAIMS as readonly string[]).includes(c);
 
-type Available = { active: boolean; legal_name: string | null; doc_type: DocType | null; nationality: string | null; pairwise_id: boolean };
+type Available = {
+  active: boolean;
+  legal_name: string | null;
+  doc_type: DocType | null;
+  nationality: string | null;
+  pairwise_id: boolean;
+  entity_ubn: string | null;
+  entity_name: string | null;
+};
+const NO_AVAIL: Available = { active: false, legal_name: null, doc_type: null, nationality: null, pairwise_id: false, entity_ubn: null, entity_name: null };
 
 const NATION: Record<string, string> = { TW: "中華民國（臺灣）" };
 
@@ -134,17 +152,36 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
     doc_type: false,
     nationality: false,
     pairwise_id: false,
+    entity_ubn: false,
+    entity_name: false,
   }));
+  // 以個人或以公司身分登入：公司帳戶由你以成員身分代為簽署（MemberValidator）
+  const [entities, setEntities] = useState<MyEntity[]>([]);
+  const [subject, setSubject] = useState<Address>(w.address);
+  useEffect(() => {
+    api<{ supported: boolean; entities: MyEntity[] }>("/api/entity")
+      .then((r) => setEntities(r.entities ?? []))
+      .catch(() => undefined);
+  }, [w.address]);
+  const asEntity = subject.toLowerCase() !== w.address.toLowerCase();
+  const subjectEntity = entities.find((e) => e.entity.toLowerCase() === subject.toLowerCase());
   const wantsCred = !!request.claims?.some(isCred);
-  const [avail, setAvail] = useState<Available | null>(null);
+  const [availFor, setAvailFor] = useState<{ subject: string; v: Available } | null>(null);
   useEffect(() => {
     if (!wantsCred) return;
-    api<Available>("/api/kyc/credential")
-      .then(setAvail)
-      .catch(() => setAvail({ active: false, legal_name: null, doc_type: null, nationality: null, pairwise_id: false }));
-  }, [wantsCred, w.address]);
+    let alive = true;
+    api<Available>(`/api/kyc/credential${asEntity ? `?account=${subject}` : ""}`)
+      .then((v) => alive && setAvailFor({ subject, v }))
+      .catch(() => alive && setAvailFor({ subject, v: NO_AVAIL }));
+    return () => {
+      alive = false;
+    };
+  }, [wantsCred, subject, asEntity]);
+  const avail = availFor?.subject === subject ? availFor.v : null;
   const credValue = (c: CredentialClaim): string | null => {
     if (!avail?.active) return null;
+    if (c === "entity_ubn") return avail.entity_ubn;
+    if (c === "entity_name") return avail.entity_name;
     if (c === "legal_name") return avail.legal_name;
     if (c === "doc_type") return avail.doc_type ? DOC_TYPE_LABEL[avail.doc_type] : null;
     if (c === "nationality") return avail.nationality ? `${avail.nationality} ${NATION[avail.nationality] ?? ""}`.trim() : null;
@@ -164,20 +201,20 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
     setError(null);
     try {
       if (!chain.deployed && chain.loaded) throw new Error("身分合約尚未部署，無法簽署登入");
-      let granted = (Object.keys(grant) as Claim[]).filter((c) => grant[c] && request.claims?.includes(c));
+      let granted = (Object.keys(grant) as Claim[]).filter((c) => grant[c] && request.claims?.includes(c) && !(asEntity ? PERSON_ONLY : ENTITY_ONLY).includes(c));
       // 個人資料由 KYC 簽章者簽成 credential（綁定這個網站與這次登入的 nonce）；沒有資料的項目不列入同意範圍
       let credential: KycCredential | null = null;
       const credWanted = granted.filter(isCred);
       if (credWanted.length) {
         credential = (
-          await api<{ credential: KycCredential | null }>("/api/kyc/credential", { audience: request.domain, nonce: request.nonce, claims: credWanted })
+          await api<{ credential: KycCredential | null }>("/api/kyc/credential", { audience: request.domain, nonce: request.nonce, claims: credWanted, ...(asEntity ? { account: subject } : {}) })
         ).credential;
         const disclosed = credential?.message.disclosed.split(",") ?? [];
         granted = granted.filter((c) => !isCred(c) || disclosed.includes(c));
       }
       // 簽章通道：錢包產生自己的通道金鑰，通道 id 與雙方公鑰一起寫進登入簽章
       const ch =
-        request.channel && allowChannel
+        request.channel && allowChannel && !asEntity
           ? await newChannel(w.address, request.domain, request.channel.pub, request.channel.ttl!, request.issuedAt, meta?.name)
           : null;
       const message: SignInMessage = {
@@ -190,15 +227,21 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
         claims: claimsString(granted),
         channel: channelString(ch && { id: ch.id, sitePub: ch.sitePub, walletPub: ch.walletPub, expiresAt: ch.expiresAt }),
       };
-      const hash = signInHash(w.address, CHAIN_ID, message);
-      const { keyId, sig } = await signWithPasskey(hash, w.passkeys);
+      const hash = signInHash(subject, CHAIN_ID, message);
+      let signature: Hex;
+      if (asEntity) {
+        signature = await entity1271(w, subject, hash);
+      } else {
+        const { keyId, sig } = await signWithPasskey(hash, w.passkeys);
+        signature = encode1271(DEPLOYMENT.keyring, keyId, sig);
+      }
       const res: SignInResponse = {
         v: 1,
         type: "cafeca:auth",
-        account: w.address,
+        account: subject,
         chainId: CHAIN_ID,
         message,
-        signature: encode1271(DEPLOYMENT.keyring, keyId, sig),
+        signature,
         claims: granted.includes("handle") ? { handle } : {},
         state: request.state,
         ...(ch ? { channel: { id: ch.id, walletPub: ch.walletPub, expiresAt: ch.expiresAt } } : {}),
@@ -258,8 +301,24 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
       </div>
 
       <p className="text-sm text-ink-2">
-        這個網站想確認你是 CAFECA 身分 <span className="font-mono">{short(w.address, 6)}</span> 的擁有者。登入只會產生一個簽章，<strong>不會轉帳、不會授權任何代幣，網站也無法用它代替你做任何事</strong>。
+        這個網站想確認你是 CAFECA 身分 <span className="font-mono">{short(subject, 6)}</span> {asEntity ? "的成員" : "的擁有者"}。登入只會產生一個簽章，<strong>不會轉帳、不會授權任何代幣，網站也無法用它代替你做任何事</strong>。
       </p>
+
+      {entities.length > 0 && (
+        <div className="space-y-1.5" data-testid="signin-as">
+          <div className="text-xs font-medium text-ink-3">登入身分</div>
+          {[{ entity: w.address, label: "個人", sub: short(w.address, 6), disabled: false }, ...entities.map((e) => ({ entity: e.entity, label: e.displayName ?? "公司帳戶", sub: e.verified ? `統編 ${e.verified.ubn}` : "尚未驗證", disabled: false }))].map((o) => (
+            <label key={o.entity} className={cx("flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2 text-sm", subject.toLowerCase() === o.entity.toLowerCase() ? "border-brand bg-brand-bg" : "border-line")}>
+              <input type="radio" name="signin-as" className="accent-[var(--brand)]" checked={subject.toLowerCase() === o.entity.toLowerCase()} onChange={() => setSubject(o.entity)} data-testid={`signin-as-${o.entity === w.address ? "self" : o.entity}`} />
+              <span className="min-w-0 flex-1">
+                {o.entity === w.address ? "以個人身分" : `以「${o.label}」身分`}
+                <span className="block font-mono text-[11px] text-ink-3">{o.sub}</span>
+              </span>
+            </label>
+          ))}
+          {asEntity && <p className="text-[11px] text-ink-3">由你以公司成員的身分代公司簽署，網站看到的帳戶是公司帳戶 <span className="font-mono">{short(subject, 6)}</span>。</p>}
+        </div>
+      )}
 
       {request.statement && (
         <div className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm">
@@ -273,15 +332,18 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
           <div className="text-xs font-medium text-ink-3">網站要求提供（逐項選擇）</div>
           {request.claims.map((c) => {
             const cred = isCred(c);
-            const value = cred ? credValue(c) : null;
-            const off = cred && !value;
+            const na = (asEntity ? PERSON_ONLY : ENTITY_ONLY).includes(c);
+            const value = cred && !na ? credValue(c) : null;
+            const off = na || (cred && !value);
             return (
               <div key={c} className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2.5 text-sm">
                 <span className="min-w-0">
                   {CLAIM_LABEL[c]}
                   <span className="ml-2 text-xs text-ink-3" data-testid={`claim-value-${c}`}>
-                    {c === "kyc_level"
-                      ? chain.level >= 2 ? "L2 已實名" : chain.level === 1 ? "L1" : "未實名"
+                    {na
+                      ? asEntity ? "公司帳戶不提供" : "以公司身分登入時才有"
+                      : c === "kyc_level"
+                      ? asEntity ? (subjectEntity?.verified && subjectEntity.monitor?.status === "ok" ? "法人已驗證" : "法人未驗證") : chain.level >= 2 ? "L2 已實名" : chain.level === 1 ? "L1" : "未實名"
                       : c === "handle"
                         ? handle ? `@${handle}` : "尚未設定"
                         : !avail
@@ -307,7 +369,8 @@ export function SignInApprove({ request }: { request: SignInRequest }) {
         </div>
       )}
 
-      {request.channel && (
+      {request.channel && asEntity && <Notice>以公司身分登入時不開啟簽章通道；需要代公司付款時，請在錢包的「公司帳戶」操作。</Notice>}
+      {request.channel && !asEntity && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2.5 text-sm">
           <span className="min-w-0">
             <span className="font-medium">開啟簽章通道</span>

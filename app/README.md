@@ -64,6 +64,8 @@ PUBLIC_ORIGIN=https://cafeca.io npm run deploy:server
 | `/agents` | AI 代理與支出通道、x402 商家購買、超額 intent 以卡片核准、撥款、撤銷 | §6 |
 | `/chat` | 「＋」選單：轉帳、收款、相機、檔案（10 MB 內，本機加密後才上傳）、分享位置（確認後才送出）；代稱（第一次設定免費、之後固定，變更需付 150 TWDC，舊代稱保留）、裝置金鑰上鏈、E2EE 訊息、付款請求與聊天內付款、AI 核准通知 | §7 |
 | `/security` | 裝置金鑰（同級、可互相移除）、實體卡與平台備援金鑰（不可移除）、連結其他裝置、額度（唯讀）、恢復狀態與取消、登出 | §4、§5 |
+| `/company` | 公司帳戶：建立（你成為第一位管理者）、以統編申請商工登記驗證（代表人本人自動通過，否則上傳授權書）、成員（管理者／經辦）、代公司轉帳；登入網站時可選「以公司身分」 | §16.4 |
+| `/admin/entity` | 法人驗證人工複核：商工登記資料、申請人與代表人比對、授權書；核准後簽發法人證明 | §16.4 |
 | `/admin/limits` | 交易額度管理（只給管理者）：查詢帳戶額度與今日已用、調升或調降（原因碼＋備註必填）、鏈上調整紀錄 | §4.3 |
 | `/dl/auth` | Sign in with CAFECA：第三方網站免註冊登入（彈出視窗／整頁導向／跨裝置 QR），顯示網域與第一次連線提醒、可取消提供的資料；`/security` 列出登入過的網站。串接說明見[根目錄 README](../README.md#sign-in-with-cafeca第三方網站登入串接) | §15 |
 | `/dl/sign` | 簽章通道：登入時同意開啟後，網站可請你簽署訊息、EIP-712 或付款；並列顯示網站說明與錢包解析的實際內容，逐筆確認；跨裝置經加密中繼，錢包開啟時跳出提示；`/security` 可關閉通道 | §15.8 |
@@ -149,6 +151,8 @@ npm run build
 **交易額度只能由管理者調整**：KeyringValidator v2 的 `setLimits` 與排程修改額度一律拒絕（實體卡也不行），只有 `limitAdmin` 能呼叫 `setLimitsFor(account, token, perTx, daily, reason)`，每次調整發出 `LimitsSetByAdmin`。測試網 `limitAdmin`＝部署者（營運錢包），正式環境請以 `transferLimitAdmin`／`acceptLimitAdmin` 移交給多簽。管理後台 `/admin/limits` 與 KYC 複核共用 `KYC_REVIEW_TOKEN` 登入，每次查詢與調整都寫入 `data/kyc/review-log.jsonl`。
 
 > **已部署的測試網仍是 v1。** v1 的額度寫在使用者帳戶可自行修改的位置，管理者無法調整；目前由 bundler 拒絕贊助任何修改額度的操作（暫時防護，自備 BOLT 直接送交易仍可繞過）。要換成 v2 必須重新部署帳戶相關合約（`npm run deploy`，KeyringValidator 與工廠都會換新），**既有測試網身分的地址會改變、需要重新開戶**。
+
+**法人帳戶（規格 §16.4）**：`MemberValidator`（成員代簽、額度只能由管理者調整）＋`EntityAccountFactory`。已部署的環境執行 `npm run deploy -- --entity` 增量部署，不影響既有身分（`deploy:server` 會自動執行）。商工登記以 `data.gcis.nat.gov.tw` 查詢（測試可用 `GCIS_COMPANY_URL` 指向模擬服務），每日監控由排程呼叫 `POST /api/entity/sync`；`/api/entity/sync?force=1` 需管理後台登入，立即重查全部法人。
 
 **伺服器需求**
 

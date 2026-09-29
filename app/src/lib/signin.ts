@@ -209,6 +209,9 @@ export type VerifiedSignIn = {
     nationality?: string | null;
     /** 同一人識別碼：同一個人在你的網站永遠相同，換帳戶、恢復後也相同；不同網站之間無法串連 */
     pairwise_id?: Hex | null;
+    /** 以公司身分登入（claims.kyc.subjectType === "entity"）時：統一編號與商工登記名稱 */
+    entity_ubn?: string | null;
+    entity_name?: string | null;
     /** credential 的簽發資訊（可存查） */
     credential?: { signer: Address; signerClass: KycStatus["signerClass"]; attestationNonce: string; issuedAt: number };
   };
@@ -378,6 +381,8 @@ export async function verifyKycCredential(
     doc_type: has("doc_type") ? m.docType : null,
     nationality: has("nationality") ? m.nationality : null,
     pairwise_id: has("pairwise_id") && m.pairwiseId !== ZERO32 ? m.pairwiseId : null,
+    entity_ubn: has("entity_ubn") ? m.entityUbn : null,
+    entity_name: has("entity_name") ? m.entityName : null,
     credential: { signer, signerClass: o.kyc.signerClass, attestationNonce: m.attestationNonce, issuedAt: m.issuedAt },
   };
 }

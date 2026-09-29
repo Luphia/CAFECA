@@ -8,6 +8,9 @@
  * 部署結果預設寫入 deployments/boltchain-testnet.local.json（不進 git）；
  * 要更新團隊共用的 deployments/boltchain-testnet.json 時加 --publish（npm run deploy -- --publish）。
  *
+ * 增量部署法人帳戶（規格 §16.4）：npm run deploy -- --entity
+ *   只部署 MemberValidator 與 EntityAccountFactory（讀 IdentityRegistry v2），不動既有自然人帳戶。
+ *
  * 增量部署 IdentityRegistry v2（規格 §16.2）：npm run deploy -- --identity
  *   不動工廠與 KeyringValidator（既有身分地址不變），部署 v2、把 v1 仍有效的證明以同一把 KYC 金鑰簽發到 v2，
  *   並重新部署改讀 v2 的 CafecaPaymaster（取回舊 paymaster 的押金）。完成後重新啟動 npm run dev／start。
@@ -104,9 +107,10 @@ async function main() {
   console.log(`chainId ${chainId}，部署者 ${deployer.address}，餘額 ${formatEther(balance)} BOLT`);
   const factoryOnly = process.argv.includes("--factory");
   const identityOnly = process.argv.includes("--identity");
+  const entityOnly = process.argv.includes("--entity");
   const deposit = factoryOnly ? 0n : parseEther(env.PAYMASTER_DEPOSIT ?? "5");
   const stake = factoryOnly ? 0n : parseEther(env.PAYMASTER_STAKE ?? "1");
-  if (!identityOnly && balance < deposit + stake + parseEther(factoryOnly ? "0.2" : "1")) {
+  if (!identityOnly && !entityOnly && balance < deposit + stake + parseEther(factoryOnly ? "0.2" : "1")) {
     console.error(`\n部署者地址：${deployer.address}`);
     console.error(`請轉入 BOLT 到這個地址（目前 ${formatEther(balance)} BOLT），再執行一次 npm run deploy。`);
     console.error("私鑰已存在 .env.local 的 DEPLOYER_PRIVATE_KEY，請妥善保管。\n");
@@ -217,6 +221,26 @@ async function main() {
     return;
   }
 
+  /** 法人帳戶：MemberValidator（成員簽署、額度只能由管理者調整）＋工廠；預設額度 單筆 5 萬／每日 20 萬 TWDC */
+  async function deployEntity(accountImpl: Address, identityRegistry: Address, twdc: Address) {
+    const memberValidator = await deploy("MemberValidator", [identityRegistry, deployer.address]);
+    const entityFactory = await deploy("EntityAccountFactory", [accountImpl, memberValidator, twdc, parseUnits("50000", 6), parseUnits("200000", 6)]);
+    return { memberValidator, entityFactory };
+  }
+
+  if (entityOnly) {
+    if (!existsSync(IN_FILE)) throw new Error("找不到既有部署，請先完整部署");
+    const d = JSON.parse(readFileSync(IN_FILE, "utf8"));
+    if (!d.deployed || d.chainId !== chainId) throw new Error("既有部署不在這條鏈上，請先完整部署");
+    if (!d.identityRegistry) throw new Error("需要先部署 IdentityRegistry v2（npm run deploy -- --identity）");
+    if (d.entityFactory && !process.argv.includes("--force")) throw new Error(`已經部署過法人帳戶合約（${d.entityFactory}）；要重新部署請加 --force`);
+    console.log("部署法人帳戶合約…");
+    const e = await deployEntity(d.accountImpl, d.identityRegistry, d.twdc);
+    writeFileSync(OUT_FILE, JSON.stringify({ ...d, ...e }, null, 2) + "\n");
+    console.log(`完成 ✓ 已寫入 ${path.relative(ROOT, OUT_FILE)}；請重新建置並啟動（npm run build／start）`);
+    return;
+  }
+
   async function migrateAttestations(d: { attestation: Address; startBlock?: number }, registry: Address) {
     const v1 = artifact("AttestationRegistry").abi;
     const v2 = artifact("IdentityRegistry").abi;
@@ -282,6 +306,7 @@ async function main() {
   await send(attestation, "AttestationRegistry", "setGuardianAuthority", [privateKeyToAccount(env.GUARDIAN_ROOT_KEY as Hex).address, true]);
   await send(identityRegistry, "IdentityRegistry", "setSigner", [kycSigner.address, signerCls]);
   const paymaster = await deployPaymaster(entryPoint, identityRegistry, channelManager);
+  const { memberValidator, entityFactory } = await deployEntity(accountImpl, identityRegistry, twdc);
 
   const out = {
     chainId,
@@ -296,6 +321,8 @@ async function main() {
     attestation,
     identityRegistry,
     deviceDirectory,
+    memberValidator,
+    entityFactory,
     paymaster,
     twdc,
     startBlock,

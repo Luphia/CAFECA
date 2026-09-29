@@ -123,7 +123,7 @@ app.post("/api/cafeca/login", async (req, res) => {
 | `redirectUri` | redirect | 與 `domain` 同源 |
 | `responseUri` | post | 與 `domain` 同源 |
 | `statement` |  | 最多 200 字 |
-| `claims` |  | `kyc_level`、`handle`、`legal_name`、`doc_type`、`nationality`、`pairwise_id`（後四項見第 9 節） |
+| `claims` |  | `kyc_level`、`handle`、`legal_name`、`doc_type`、`nationality`、`pairwise_id`、`entity_ubn`、`entity_name`（後六項見第 9 節） |
 | `state` |  | 原樣帶回 |
 | `channel` |  | `{ "pub": "<P-256 公鑰 base64url>", "ttl": 秒 }`：要求開啟簽章通道（見第 8 節），`ttl` 最長 30 天 |
 
@@ -386,7 +386,7 @@ EIP-712 的數值請使用 `number` 或十進位字串，不要傳 `bigint`（�
 | L2 | 自然人：身分證正反面＋6 動作活體影像，後台比對本人（原型期見上方說明） |
 
 - 效期一年，過期自動視為 L0。
-- `subjectType`：0 自然人、1 法人。**自然人的 L2 不等於法人**，法人證明另行簽發（規格 §16.4，尚未上線）。
+- `subjectType`：0 自然人、1 法人。**自然人的 L2 不等於法人**，法人證明由商工登記驗證後另行簽發（見下方「法人帳戶」）。
 
 **讀取**
 
@@ -429,6 +429,7 @@ SignerSet(address indexed signer, uint8 signerClass)   // 0 NONE、1 PROTOTYPE�
 | `legal_name` | 證件上的姓名 | 後台 OCR 擷取、經自動或人工核准；使用者無法自行填寫 |
 | `doc_type` | `national_id`／`resident_permit`／`passport` | 目前支援國民身分證與居留證 |
 | `nationality` | ISO 3166-1 alpha-2，例 `TW` | 國民身分證為 `TW`；居留證暫不提供 |
+| `entity_ubn`、`entity_name` | 統一編號、商工登記的公司名稱 | 只在「以公司身分」登入時提供（見下方「法人帳戶」） |
 | `pairwise_id` | `bytes32` 同一人識別碼 | `HMAC(K_pairwise, kycIdHash ‖ audience)`：同一個人在你的網站永遠相同（換帳戶、恢復後也相同），不同網站之間無法串連，也推不回證號 |
 
 ```js
@@ -447,7 +448,7 @@ cafeca.signIn({ nonce, claims: ["kyc_level", "legal_name", "pairwise_id"] });
 ```
 domain        = { name: "CAFECA KYC Credential", version: "1", chainId, verifyingContract: identityRegistry }
 KycCredential = (address account, string audience, string nonce, uint64 attestationNonce, uint256 issuedAt, uint256 expiresAt,
-                 string legalName, string docType, string nationality, bytes32 pairwiseId, string disclosed)
+                 string legalName, string docType, string nationality, bytes32 pairwiseId, string entityUbn, string entityName, string disclosed)
 ```
 
 `disclosed` 是這份 credential 揭露的 claims（排序、逗號分隔）；沒有揭露的欄位為空字串，`pairwiseId` 為 0。簽章是一般的 65 bytes secp256k1 簽章（不是 ERC-1271）。
@@ -461,6 +462,31 @@ KycCredential = (address account, string audience, string nonce, uint64 attestat
 5. 正式實名要求 `signerClass == PRODUCTION`（目前都是 `PROTOTYPE`）。
 
 credential 不上鏈，驗證也不經過 CAFECA 伺服器。它只證明「登入當下」的內容；要持續追蹤狀態，請鏡像第 9 節的事件。
+
+#### 法人帳戶（以公司身分登入）
+
+使用者可以在錢包建立公司帳戶，以統一編號通過商工登記驗證後，選擇「以公司身分」登入你的網站。對網站來說：
+
+- `user.account` 是**公司帳戶的地址**（與代表人或經辦的個人帳戶不同），交易所帳本請以它為主鍵。
+- `user.claims.kyc.subjectType === "entity"`，`effectiveLevel === 2` 表示公司已通過驗證而且狀態有效。
+- 要求 `entity_ubn`、`entity_name` 時，資料在 KYC Credential 裡（驗證方式同上）。
+- 登入簽章仍是 ERC-1271：公司帳戶的 validator 是 `MemberValidator`，由一位成員以自己的 Passkey 代簽；`cafeca.verify` 不需要任何修改。
+
+**驗證與監控**
+
+- 經濟部商工登記公示資料依統編查詢，公司狀況必須是「核准設立」。
+- 申請人的證件姓名與登記代表人相同時自動通過；不同時需上傳代表人授權書，由 CAFECA 人工複核。
+- 一個統編只能綁一個公司帳戶。
+- 每天重新查詢：公司狀況改變 → `Revoked`（原因碼 3）；代表人或登記事項變更 → `Suspended`（原因碼 4），重新驗證後恢復。
+
+**成員與稽核**
+
+- 成員是其他 CAFECA 身分，每位都必須是有效 L2。管理者可以新增、移除成員；經辦只能轉帳與授權代幣。
+- 每一筆公司交易都發出 `MemberValidator.MemberAuthorized(entity, member, userOpHash)`，查得到是哪一位成員簽的。
+- 成員簽的是 `keccak256(abi.encode(keccak256("CAFECA_ENTITY_V1"), chainId, memberValidator, entity, hash))`，所以成員個人的簽章不能當成公司簽章，反過來也不行。
+- 公司被暫停或撤銷後不能轉出資金；額度只能由 CAFECA 調整。
+
+目前只支援公司登記；商業登記（行號）、有限合夥與財團／社團法人之後加入。
 
 **舊版 AttestationRegistry（v1）**：只保留給 CAFECA 內部的綁卡門檻使用。v1 沒有 nonce、不能撤銷，而且**舊簽章可以被任何人重送**（撤銷後重送就會恢復成 L2），依賴方不應再讀 v1。
 
