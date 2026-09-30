@@ -99,7 +99,8 @@ export async function finalize(account: string, id: string, reviewer?: string) {
     // recover
     const s = await read();
     const rec = s.kyc[keyOf(s, account)!];
-    const onboard = rec.cases?.find((x) => x.purpose === "onboard" && x.status === "approved");
+    // 比對對象：目前依據的核准案件（最新一筆、尚未因保存期限清除；可能是開戶或上一次恢復）
+    const onboard = (rec.cases ?? []).filter((x) => x.status === "approved" && !x.purgedAt && x.id !== c.id).sort((a, b) => (b.processedAt ?? b.createdAt) - (a.processedAt ?? a.createdAt))[0];
     if (!onboard) throw new Error("找不到開戶時的實名紀錄");
     if (!reviewer) {
       const same = await sameSubject(account, onboard, c);

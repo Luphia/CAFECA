@@ -12,6 +12,7 @@ const PAGES: { href: string; title: string; desc: string; roles: string[] }[] = 
   { href: "/admin/limits", title: "交易額度", desc: "查詢與調整帳戶額度", roles: ["limits"] },
   { href: "/admin/rp", title: "依賴方登記", desc: "資料調閱 API 的使用者與 API 金鑰", roles: ["admin"] },
   { href: "/admin/staff", title: "人員管理", desc: "邀請人員、角色、Passkey、停用", roles: ["admin"] },
+  { href: "/admin/policy", title: "時限與保存期限", desc: "調閱回應時限、同意有效期、保存期限與清除", roles: ["admin", "audit"] },
   { href: "/admin/audit", title: "稽核紀錄", desc: "hash-chained 紀錄與整條鏈驗證", roles: ["audit", "admin"] },
 ];
 

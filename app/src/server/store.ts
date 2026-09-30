@@ -105,6 +105,8 @@ export type RelyingParty = {
   createdAt: number;
   createdBy: string;
   active: boolean;
+  /** 資料處理約定（DPA）：未簽署不能使用 API（P3-B3） */
+  dpa?: { version: string; signedAt: string; recordedBy: string; recordedAt: number };
 };
 
 export type Disclosure = {
@@ -119,7 +121,11 @@ export type Disclosure = {
   /** 司法機關要求暫緩通知當事人，到這個時間前使用者看不到 */
   noticeDeferredUntil?: number;
   status: "consent" | "review" | "approved1" | "released" | "rejected";
-  consent?: { status: "pending" | "granted" | "denied"; at?: number; signature?: string };
+  consent?: { status: "pending" | "granted" | "denied" | "expired"; at?: number; signature?: string; expiresAt?: number };
+  /** 應回應期限（司法機關文書所載，或依政策的工作天數；同意類在當事人同意後起算） */
+  dueAt?: number;
+  /** 依賴方提出的回應期限（文書所載） */
+  respondBy?: number;
   /** [0] 第一位核准，[1] 第二位放行（不同人） */
   approvals: { who: string; at: number; fields: Disclosure["fields"]; note?: string }[];
   rejection?: { by: string; at: number; reason: string };
@@ -216,6 +222,8 @@ export type KycCase = {
   /** 核准後的鏈上結果 */
   result?: { txHash?: string; recoveryTx?: string; readyAt?: number; error?: string };
   processedAt?: number;
+  /** 保存期限到期、證件影像與臉部影片已清除的時間（P3-B5） */
+  purgedAt?: number;
   /** 背景驗證嘗試次數（伺服器中途重啟時避免同一案件反覆讓程序當掉） */
   attempts?: number;
 };

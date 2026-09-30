@@ -17,10 +17,13 @@ type D = {
   relationship: { type: string; detail: string };
   noticeDeferredUntil?: number;
   status: "consent" | "review" | "approved1" | "released" | "rejected";
-  consent?: { status: string; at?: number };
+  consent?: { status: string; at?: number; expiresAt?: number };
   approvals: { who: string; at: number; fields: string[]; note?: string }[];
   rejection?: { by: string; at: number; reason: string };
   release?: { at: number; by: string; expiresAt: number; fetched: number[] };
+  dueAt?: number;
+  respondBy?: number;
+  overdue?: boolean;
   createdAt: number;
 };
 
@@ -133,6 +136,11 @@ export default function DisclosureReviewPage() {
                       <Badge tone={ST[x.status].tone}>{ST[x.status].t}</Badge>
                     </div>
                     <div className="text-xs text-ink-3">{BASIS[x.legalBasis.type]} · {x.handle ? `@${x.handle}` : short(x.account, 6)} · {new Date(x.createdAt).toLocaleString("zh-TW")}</div>
+                    {x.dueAt && ["review", "approved1"].includes(x.status) && (
+                      <div className={cx("text-xs", x.overdue ? "text-danger" : "text-ink-2")} data-testid={`dr-due-${x.id}`}>
+                        {x.overdue ? "已逾期：" : "回應期限："}{new Date(x.dueAt).toLocaleDateString("zh-TW")}
+                      </div>
+                    )}
                   </button>
                 </li>
               ))}
@@ -153,6 +161,7 @@ export default function DisclosureReviewPage() {
                   <tr><th>原因</th><td className="whitespace-pre-wrap">{d.reason}</td></tr>
                   <tr><th>客戶關係</th><td>{d.relationship.detail}</td></tr>
                   <tr><th>當事人同意</th><td>{d.consent ? `${d.consent.status}${d.consent.at ? ` · ${new Date(d.consent.at).toLocaleString("zh-TW")}` : ""}` : "不需要"}</td></tr>
+                  <tr><th>回應期限</th><td>{d.dueAt ? `${new Date(d.dueAt).toLocaleString("zh-TW")}${d.respondBy ? "（文書所載）" : "（依政策）"}` : d.consent?.expiresAt ? `等待當事人同意，${new Date(d.consent.expiresAt).toLocaleString("zh-TW")} 前未回覆即失效` : "—"}</td></tr>
                   <tr><th>通知當事人</th><td>{d.noticeDeferredUntil ? `暫緩至 ${new Date(d.noticeDeferredUntil).toLocaleDateString("zh-TW")}` : "立即"}</td></tr>
                   {d.approvals.map((a, i) => (
                     <tr key={i}><th>{i === 0 ? "第一位核准" : "第二位放行"}</th><td>{a.who} · {new Date(a.at).toLocaleString("zh-TW")} · {a.fields.map((f) => LABEL[f]).join("、")}{a.note ? `（${a.note}）` : ""}</td></tr>

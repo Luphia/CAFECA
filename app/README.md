@@ -169,7 +169,7 @@ npm run build
 - 角色：`admin`（人員與依賴方管理）、`kyc`（KYC 與法人複核）、`disclosure`（資料調閱核准）、`limits`（交易額度）、`audit`（稽核紀錄唯讀）。管理者不會自動擁有其他角色；資料調閱需要兩位不同的人員具備 `disclosure`。
 - 伺服器端驗證 WebAuthn：challenge（5 分鐘、一次性）、來源網址（正式模式只接受 `PUBLIC_ORIGIN`）、rpId、使用者驗證旗標與 ES256 簽章。停用與角色調整立即生效。
 
-**正式模式上線閘門（P3-A4）**：`.env.local` 設定 `CAFECA_MODE=production` 後，伺服器啟動與 `deploy:server` 都會檢查，以下任一項存在就拒絕啟動：`KYC_PROTOTYPE_AUTO_APPROVE`、`NEXT_PUBLIC_KYC_SIMULATE`、`MOEACA_TEST_ANCHORS`、`GCIS_COMPANY_URL`、未校準的 `KYC_AUTO_APPROVE`（校準後另設 `KYC_AUTO_CALIBRATED=1`）、非 https 的 `PUBLIC_ORIGIN`。可先執行 `npm run gate` 自行檢查。正式簽章者只會在閘門通過的環境登記。
+**正式模式上線閘門（P3-A4）**：`.env.local` 設定 `CAFECA_MODE=production` 後，伺服器啟動與 `deploy:server` 都會檢查，以下任一項存在就拒絕啟動：`KYC_PROTOTYPE_AUTO_APPROVE`、`NEXT_PUBLIC_KYC_SIMULATE`、`MOEACA_TEST_ANCHORS`、`GCIS_COMPANY_URL`、未校準的 `KYC_AUTO_APPROVE`（校準後另設 `KYC_AUTO_CALIBRATED=1`）、非 https 的 `PUBLIC_ORIGIN`、未設定 `CRON_SECRET`。可先執行 `npm run gate` 自行檢查。正式簽章者只會在閘門通過的環境登記。
 
 **伺服器金鑰介面（P3-A1）**：KYC 簽章（`Attested`／`Suspended`／`Revoked`、`KycCredential`）、資料包 ES256 簽章與 `pairwise_id` 的 HMAC 一律經過 `src/server/keys.ts`。`KEY_BACKEND=local`（預設）從 `.env.local` 讀金鑰；改用 KMS／HSM 時新增一個實作並在 `BACKENDS` 註冊，其他程式不用改。KMS 回傳的 secp256k1 簽章多半是 DER、可能是 high-s，請用 `secp256k1FromDer` 轉換（OpenZeppelin ECDSA 拒收 high-s）。發卡方、備援金鑰根金鑰、paymaster 等其他金鑰尚未移入這個介面。
 
@@ -199,6 +199,12 @@ npm run build
 4. 複核人員在 `/admin/disclosures` 雙人覆核：第一位核准（可刪減欄位），第二位不同的人放行。
 5. 依賴方 `GET /api/rp/disclosures?id=` 取得狀態；放行後 7 天內附 `package`：以依賴方公鑰加密的 JWE（`ECDH-ES`＋`A256GCM`），內容是 CAFECA 以 `DISCLOSURE_SIGNING_KEY` 簽章的 JWS（`ES256`），驗章公鑰公布在 `/.well-known/cafeca-configuration` 的 `disclosure.jwks`。參考實作：`CAFECA_RP_KEY=… npm run rp -- fetch <錢包網址> <id> rp-key.json out/`（解密、驗章、另存證件影像）。
 6. 使用者在 `/security` 看得到誰、依什麼依據、調閱了哪些欄位；暫緩通知的案件到期後才顯示。
+
+**時限、同意期限與資料處理約定（P3-B3／B4）**：依賴方登記時必須填寫雙方簽署的 DPA 版本與日期，未登記的依賴方 API 回 403（`POST /api/admin/rp { id, dpaVersion, dpaSignedAt }` 可補登）。每件申請有回應期限 `dueAt`：洗錢防制與同意類（同意後起算）預設 5 個工作天；司法機關可帶 `respondBy`（文書所載期限），沒帶則 5 個工作天。同意請求 7 天未回覆即失效（視為不同意）。逾期案件在 `/admin/disclosures` 標示。
+
+**保存期限（P3-B5）**：未通過的案件、以及被較新核准案件取代的舊案件，180 天後清除證件影像、臉部影片與人臉特徵（保留案件紀錄與檔案雜湊，清除寫入稽核紀錄）；目前依據的核准案件、調閱與稽核紀錄不自動刪除。每日排程 `POST /api/maintenance`（帶 `x-cafeca-cron: $CRON_SECRET`，`deploy:server` 會產生密鑰並建立 crontab）同時處理同意逾期。`/admin/policy` 顯示目前的數值與即將清除的案件。
+
+> 以上天數都是**給法律顧問審閱的草案預設值**（`src/server/policy.ts`），可用 `DISCLOSURE_SLA_AML_DAYS`、`DISCLOSURE_SLA_AUTHORITY_DAYS`、`DISCLOSURE_CONSENT_DAYS`、`DISCLOSURE_PACKAGE_DAYS`、`RETENTION_REJECTED_CASE_DAYS`、`RETENTION_SUPERSEDED_CASE_DAYS` 調整；法遵定案後設 `POLICY_APPROVED=1` 與 `POLICY_VERSION`。工作天尚未計入國定假日；帳戶關閉後的保存年限、服務條款同意版本的紀錄，待條款定稿後實作。
 
 `DISCLOSURE_SIGNING_KEY` 由 `npm run deploy`／`deploy:server` 自動產生；更換後依賴方要重新抓 `disclosure.jwks`。法人帳戶目前不接受 `consent` 類申請。
 

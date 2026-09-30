@@ -17,7 +17,8 @@ type Item = {
   reason: string;
   createdAt: number;
   releasedAt: number | null;
-  consent: "pending" | "granted" | "denied" | null;
+  consent: "pending" | "granted" | "denied" | "expired" | null;
+  consentExpiresAt: number | null;
   consentMessage: { approve: string; deny: string } | null;
 };
 
@@ -81,6 +82,8 @@ export function DisclosurePanel({ w }: { w: LocalWallet }) {
               </div>
               <div>欄位：{d.fields.map((f) => f.label).join("、")}</div>
               <div className="text-ink-2">原因：{d.reason}</div>
+              {d.status === "consent" && d.consentExpiresAt && <div className="text-xs text-warn">請在 {new Date(d.consentExpiresAt).toLocaleString("zh-TW")} 前回覆，逾期視為不同意。</div>}
+              {d.consent === "expired" && <div className="text-xs text-ink-3">你沒有在期限內回覆，CAFECA 未提供資料。</div>}
               {d.status === "consent" && d.consentMessage && (
                 <div className="grid grid-cols-2 gap-2 pt-1">
                   <Button size="sm" variant="secondary" busy={busy === d.id + "deny"} onClick={() => decide(d, "deny")} testId={`disclosure-deny-${d.id}`}>拒絕</Button>

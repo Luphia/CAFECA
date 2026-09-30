@@ -102,6 +102,10 @@ if [ -z "$(env_get KYC_PAIRWISE_KEY)" ]; then
 else
   ok "KYC_PAIRWISE_KEY 已設定"
 fi
+if [ -z "$(env_get CRON_SECRET)" ]; then
+  env_set CRON_SECRET "$(node -e 'console.log(require("crypto").randomBytes(24).toString("hex"))')"
+  ok "已產生 CRON_SECRET（每日排程 /api/maintenance 用）"
+fi
 if [ -z "$(env_get DISCLOSURE_SIGNING_KEY)" ]; then
   env_set DISCLOSURE_SIGNING_KEY "$(node -e 'const k=require("crypto").generateKeyPairSync("ec",{namedCurve:"P-256"}).privateKey.export({format:"jwk"});console.log(Buffer.from(k.d,"base64url").toString("hex"))')"
   ok "已產生 DISCLOSURE_SIGNING_KEY（資料調閱資料包的簽章金鑰；更換後依賴方須重新抓取 disclosure.jwks）"
@@ -168,11 +172,12 @@ fi
 step "排程 /api/identity/sync（恢復後重新簽發或暫停實名證明）與 /api/entity/sync（法人每日監控）"
 cron_line="*/5 * * * * curl -fsS -X POST $origin/api/identity/sync > /dev/null 2>&1 # cafeca-identity-sync"
 cron_entity="17 3 * * * curl -fsS -X POST $origin/api/entity/sync > /dev/null 2>&1 # cafeca-entity-sync"
+cron_maint="41 3 * * * curl -fsS -X POST -H 'x-cafeca-cron: $(env_get CRON_SECRET)' $origin/api/maintenance > /dev/null 2>&1 # cafeca-maintenance"
 if [ "${SKIP_CRON:-}" = "1" ]; then
   warn "SKIP_CRON=1，略過"
 elif command -v crontab >/dev/null; then
-  ( crontab -l 2>/dev/null | grep -v "# cafeca-identity-sync" | grep -v "# cafeca-entity-sync" ; echo "$cron_line" ; echo "$cron_entity" ) | crontab -
-  ok "crontab：身分同步每 5 分鐘、法人商工登記監控每天 03:17"
+  ( crontab -l 2>/dev/null | grep -v "# cafeca-identity-sync" | grep -v "# cafeca-entity-sync" | grep -v "# cafeca-maintenance" ; echo "$cron_line" ; echo "$cron_entity" ; echo "$cron_maint" ) | crontab -
+  ok "crontab：身分同步每 5 分鐘、法人商工登記監控每天 03:17、同意逾期與保存期限清除每天 03:41"
 else
   warn "沒有 crontab，請自行每 5 分鐘呼叫：curl -X POST $origin/api/identity/sync"
 fi

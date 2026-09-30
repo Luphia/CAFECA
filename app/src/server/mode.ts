@@ -18,6 +18,7 @@ export function launchGateProblems(e: NodeJS.ProcessEnv = process.env): string[]
   for (const [k, bad, why] of FORBIDDEN) if (e[k] !== undefined && bad(e[k]!)) out.push(`${k}：${why}`);
   const origin = e.PUBLIC_ORIGIN ?? "";
   if (!origin.startsWith("https://")) out.push("PUBLIC_ORIGIN 必須是 https 網址（管理後台 Passkey 登入只接受這個來源）");
+  if (!e.CRON_SECRET) out.push("CRON_SECRET 未設定（排程工作 /api/maintenance 需要）");
   if (!e.KYC_REVIEW_TOKEN && !e.CAFECA_ALLOW_NO_BOOTSTRAP) out.push("KYC_REVIEW_TOKEN 未設定（建立第一位管理者需要）；已建立管理者後可設 CAFECA_ALLOW_NO_BOOTSTRAP=1");
   return out;
 }

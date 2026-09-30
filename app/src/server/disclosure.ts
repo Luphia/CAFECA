@@ -12,6 +12,7 @@ import { membersOf } from "./entity";
 import { queryEvents } from "./indexer";
 import { pairwiseId } from "./kyc-credential";
 import { disclosureSigner } from "./keys";
+import { addBusinessDays, policy } from "./policy";
 import { caseDir } from "./kyc-pipeline";
 import { HttpError } from "./session";
 import { read, update, type Disclosure, type RelyingParty, type Store } from "./store";
@@ -61,7 +62,7 @@ export const BASIS_LABEL: Record<LegalBasisType, string> = {
 const NEEDS_RELATIONSHIP: LegalBasisType[] = ["aml", "consent"];
 /** 可以要求暫緩通知當事人的依據 */
 const MAY_DEFER: LegalBasisType[] = ["court", "prosecutor", "police"];
-export const RELEASE_TTL_MS = 7 * 24 * 3600 * 1000;
+const releaseTtl = () => policy().disclosure.packageDays * 86400_000;
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -77,9 +78,10 @@ export function originOf(u: string): string | null {
   }
 }
 
-export async function createRelyingParty(by: string, p: { name: string; ubn?: string; domains: string[]; contact: string; encJwk: JWK }) {
+export async function createRelyingParty(by: string, p: { name: string; ubn?: string; domains: string[]; contact: string; encJwk: JWK; dpaVersion?: string; dpaSignedAt?: string }) {
   const name = p.name.trim().slice(0, 80);
   if (!name) throw new HttpError(400, "請填寫依賴方名稱");
+  const dpa = checkDpa(by, p.dpaVersion, p.dpaSignedAt);
   const domains = [...new Set(p.domains.map(originOf))].filter((d): d is string => !!d);
   if (!domains.length) throw new HttpError(400, "至少需要一個 https 網域（與 Sign in with CAFECA 的 domain 相同）");
   if (p.encJwk?.kty !== "EC" || p.encJwk.crv !== "P-256" || !p.encJwk.x || !p.encJwk.y || p.encJwk.d) throw new HttpError(400, "加密公鑰必須是 P-256 公鑰 JWK（不可包含私鑰 d）");
@@ -100,6 +102,7 @@ export async function createRelyingParty(by: string, p: { name: string; ubn?: st
     createdAt: Date.now(),
     createdBy: by,
     active: true,
+    dpa,
   };
   await update((s) => {
     s.relyingParties ??= {};
@@ -109,8 +112,26 @@ export async function createRelyingParty(by: string, p: { name: string; ubn?: st
   return { rp: publicRp(rp), apiKey };
 }
 
+function checkDpa(by: string, version?: string, signedAt?: string) {
+  const v = (version ?? "").trim().slice(0, 60);
+  const d = (signedAt ?? "").trim();
+  if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(d))) throw new HttpError(400, "請填寫雙方簽署的資料處理約定（DPA）版本與簽署日期（YYYY-MM-DD）");
+  if (Date.parse(d) > Date.now() + 86400_000) throw new HttpError(400, "DPA 簽署日期不能是未來");
+  return { version: v, signedAt: d, recordedBy: by, recordedAt: Date.now() };
+}
+
+export async function setRpDpa(by: string, id: string, version?: string, signedAt?: string) {
+  const dpa = checkDpa(by, version, signedAt);
+  await update((s) => {
+    const r = s.relyingParties?.[id];
+    if (!r) throw new HttpError(404, "找不到依賴方");
+    r.dpa = dpa;
+  });
+  await writeAudit({ who: by, action: "rp.dpa", rp: id, version: dpa.version, signedAt: dpa.signedAt });
+}
+
 export function publicRp(r: RelyingParty) {
-  return { id: r.id, name: r.name, ubn: r.ubn ?? null, domains: r.domains, contact: r.contact, active: r.active, createdAt: r.createdAt, createdBy: r.createdBy };
+  return { id: r.id, name: r.name, ubn: r.ubn ?? null, domains: r.domains, contact: r.contact, active: r.active, createdAt: r.createdAt, createdBy: r.createdBy, dpa: r.dpa ? { version: r.dpa.version, signedAt: r.dpa.signedAt } : null };
 }
 
 export async function setRpActive(by: string, id: string, active: boolean) {
@@ -130,6 +151,7 @@ export async function requireRp(req: Request): Promise<RelyingParty> {
   const ok = !!r && timingSafeEqual(Buffer.from(sha(m[1]), "hex"), Buffer.from(r.keyHash, "hex"));
   if (!r || !ok) throw new HttpError(401, "API 金鑰無效");
   if (!r.active) throw new HttpError(403, "這個依賴方已停用");
+  if (!r.dpa) throw new HttpError(403, "尚未登記雙方簽署的資料處理約定（DPA），請聯絡 CAFECA");
   return r;
 }
 
@@ -168,7 +190,7 @@ async function proveRelationship(rp: RelyingParty, account: Address, p: { signIn
 
 export async function createDisclosure(
   rp: RelyingParty,
-  b: { account?: string; fields?: string[]; legalBasis?: { type?: string; ref?: string; text?: string }; caseRef?: string; reason?: string; deferNoticeUntil?: string; signIn?: SignInResponse; pairwiseId?: string },
+  b: { account?: string; fields?: string[]; legalBasis?: { type?: string; ref?: string; text?: string }; caseRef?: string; reason?: string; deferNoticeUntil?: string; respondBy?: string; signIn?: SignInResponse; pairwiseId?: string },
 ) {
   if (!b.account || !/^0x[0-9a-fA-F]{40}$/.test(b.account)) throw new HttpError(400, "account 格式錯誤");
   const account = getAddress(b.account);
@@ -188,6 +210,15 @@ export async function createDisclosure(
     if (!Number.isFinite(t) || t < Date.now() || t > Date.now() + 366 * 86400_000) throw new HttpError(400, "deferNoticeUntil 必須是一年內的日期");
     noticeDeferredUntil = t;
   }
+  let respondBy: number | undefined;
+  if (b.respondBy) {
+    if (!MAY_DEFER.includes(type)) throw new HttpError(400, "只有司法機關調閱可以指定回應期限（respondBy）；其他依據依 CAFECA 政策的工作天數");
+    const t = Date.parse(b.respondBy);
+    if (!Number.isFinite(t) || t < Date.now() || t > Date.now() + 366 * 86400_000) throw new HttpError(400, "respondBy 必須是一年內的日期");
+    respondBy = t;
+  }
+  const pol = policy().disclosure;
+  const now = Date.now();
   const s = await read();
   const known = Object.keys(s.kyc).some((k) => k.toLowerCase() === account.toLowerCase()) || !!s.entities?.[account.toLowerCase()];
   if (!known) throw new HttpError(404, "CAFECA 沒有這個帳戶的實名資料");
@@ -206,7 +237,9 @@ export async function createDisclosure(
     relationship,
     noticeDeferredUntil,
     status: type === "consent" ? "consent" : "review",
-    consent: type === "consent" ? { status: "pending" } : undefined,
+    consent: type === "consent" ? { status: "pending", expiresAt: now + pol.consentDays * 86400_000 } : undefined,
+    respondBy,
+    dueAt: type === "consent" ? undefined : (respondBy ?? addBusinessDays(now, MAY_DEFER.includes(type) ? pol.authorityBusinessDays : pol.amlBusinessDays)),
     approvals: [],
     createdAt: Date.now(),
   };
@@ -229,6 +262,8 @@ export function rpView(d: Disclosure) {
     consent: d.consent?.status ?? null,
     rejection: d.rejection ?? null,
     release: d.release ? { at: d.release.at, expiresAt: d.release.expiresAt } : null,
+    dueAt: d.dueAt ?? null,
+    consentExpiresAt: d.consent?.expiresAt ?? null,
     createdAt: d.createdAt,
   };
 }
@@ -253,17 +288,39 @@ export async function decideConsent(me: Address, id: string, decision: "approve"
   const d = s.disclosures?.[id];
   if (!d || d.account.toLowerCase() !== me.toLowerCase()) throw new HttpError(404, "找不到這個調閱請求");
   if (d.status !== "consent" || d.consent?.status !== "pending") throw new HttpError(409, "這個請求不需要或已經回覆同意");
+  if (d.consent.expiresAt && Date.now() > d.consent.expiresAt) {
+    await sweepDisclosures();
+    throw new HttpError(410, "這個同意請求已逾期失效");
+  }
   const rp = s.relyingParties![d.rp];
   const msg = consentMessage(d, rp.name, decision);
   const magic = await publicClient.readContract({ address: me, abi: ERC1271, functionName: "isValidSignature", args: [hashMessage(msg), signature] }).catch(() => "0x");
   if (magic !== "0x1626ba7e") throw new HttpError(400, "Passkey 簽章驗證失敗");
   await update((st) => {
     const x = st.disclosures![id];
-    x.consent = { status: decision === "approve" ? "granted" : "denied", at: Date.now(), signature };
+    x.consent = { ...x.consent, status: decision === "approve" ? "granted" : "denied", at: Date.now(), signature };
+    if (decision === "approve") x.dueAt = addBusinessDays(Date.now(), policy().disclosure.amlBusinessDays);
     x.status = decision === "approve" ? "review" : "rejected";
     if (decision === "deny") x.rejection = { by: "當事人", at: Date.now(), reason: "當事人拒絕提供" };
   });
   await writeAudit({ who: `user:${me}`, action: decision === "approve" ? "disclosure.consent" : "disclosure.consent.deny", disclosure: id });
+}
+
+/** 逾期未回覆的同意請求自動失效（排程與列表時執行） */
+export async function sweepDisclosures(now = Date.now()) {
+  const expired: string[] = [];
+  await update((st) => {
+    for (const d of Object.values(st.disclosures ?? {})) {
+      if (d.status === "consent" && d.consent?.status === "pending" && d.consent.expiresAt && now > d.consent.expiresAt) {
+        d.consent.status = "expired";
+        d.status = "rejected";
+        d.rejection = { by: "system", at: now, reason: "當事人逾期未回覆同意請求" };
+        expired.push(d.id);
+      }
+    }
+  });
+  for (const id of expired) await writeAudit({ who: "system", action: "disclosure.consent.expire", disclosure: id });
+  return { expired: expired.length };
 }
 
 // ───────────────────────── 覆核與放行（雙人） ─────────────────────────
@@ -291,7 +348,7 @@ export async function approveDisclosure(who: string, id: string, fields: string[
       const x = st.disclosures![id];
       x.approvals = [x.approvals[0], { who, at: Date.now(), fields: final, note }];
       x.status = "released";
-      x.release = { at: Date.now(), by: who, expiresAt: Date.now() + RELEASE_TTL_MS, fetched: [] };
+      x.release = { at: Date.now(), by: who, expiresAt: Date.now() + releaseTtl(), fetched: [] };
     });
     await writeAudit({ who, action: "disclosure.release", disclosure: id, fields: final, firstApprover: d.approvals[0].who, note });
     return { status: "released" as const };
@@ -421,6 +478,7 @@ export async function fetchPackage(rp: RelyingParty, id: string) {
 // ───────────────────────── 當事人檢視 ─────────────────────────
 
 export async function myDisclosures(me: Address) {
+  await sweepDisclosures();
   const s = await read();
   const now = Date.now();
   return Object.values(s.disclosures ?? {})
@@ -439,6 +497,7 @@ export async function myDisclosures(me: Address) {
         createdAt: d.createdAt,
         releasedAt: d.release?.at ?? null,
         consent: d.consent?.status ?? null,
+        consentExpiresAt: d.consent?.expiresAt ?? null,
         consentMessage: d.status === "consent" && rp ? { approve: consentMessage(d, rp.name, "approve"), deny: consentMessage(d, rp.name, "deny") } : null,
       };
     });
@@ -447,11 +506,18 @@ export async function myDisclosures(me: Address) {
 // ───────────────────────── 複核後台 ─────────────────────────
 
 export async function adminDisclosures(status: string) {
+  await sweepDisclosures();
   const s = await read();
   return Object.values(s.disclosures ?? {})
     .filter((d) => status === "all" || d.status === status || (status === "open" && ["consent", "review", "approved1"].includes(d.status)))
     .sort((a, b) => b.createdAt - a.createdAt)
-    .map((d) => ({ ...d, rpName: s.relyingParties?.[d.rp]?.name ?? d.rp, handle: s.profiles[d.account]?.handle ?? null, consent: d.consent ? { status: d.consent.status, at: d.consent.at } : undefined }));
+    .map((d) => ({
+      ...d,
+      rpName: s.relyingParties?.[d.rp]?.name ?? d.rp,
+      handle: s.profiles[d.account]?.handle ?? null,
+      consent: d.consent ? { status: d.consent.status, at: d.consent.at, expiresAt: d.consent.expiresAt } : undefined,
+      overdue: !!d.dueAt && Date.now() > d.dueAt && ["review", "approved1"].includes(d.status),
+    }));
 }
 
 /** 複核人員檢視單一申請與將要提供的資料（證件影像只列雜湊，不在這裡顯示）；寫入稽核紀錄 */
