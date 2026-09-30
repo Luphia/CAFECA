@@ -19,7 +19,7 @@ function publicOrigin(req: Request): string {
   return host ? `${proto}://${host}` : new URL(req.url).origin;
 }
 
-export function GET(req: Request) {
+export async function GET(req: Request) {
   const origin = publicOrigin(req);
   const body = {
     issuer: origin,
@@ -43,7 +43,7 @@ export function GET(req: Request) {
       max_ttl_seconds: CREDENTIAL_TTL,
     },
     // 依賴方資料調閱（須先向 CAFECA 登記取得 API 金鑰）；資料包以 jwks 驗章
-    disclosure: { endpoint: `${origin}/api/rp/disclosures`, fields: FIELDS, legal_bases: BASES, package: { jwe: { alg: "ECDH-ES", enc: "A256GCM" }, jws: "ES256" }, jwks: disclosureJwks() },
+    disclosure: { endpoint: `${origin}/api/rp/disclosures`, fields: FIELDS, legal_bases: BASES, package: { jwe: { alg: "ECDH-ES", enc: "A256GCM" }, jws: "ES256" }, jwks: await disclosureJwks() },
   };
   return Response.json(body, {
     headers: { "access-control-allow-origin": "*", "cache-control": "public, max-age=300" },

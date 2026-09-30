@@ -16,7 +16,8 @@
     "postinstall": "node scripts/fetch-models.mjs",
     "moeaca:inspect": "tsx --conditions react-server scripts/moeaca-inspect.mts",
     "rp": "tsx scripts/rp-client.mts",
-    "gate": "tsx scripts/launch-gate.mts"
+    "gate": "tsx scripts/launch-gate.mts",
+    "cutover": "tsx --conditions react-server scripts/signer-cutover.mts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

@@ -171,6 +171,17 @@ npm run build
 
 **正式模式上線閘門（P3-A4）**：`.env.local` 設定 `CAFECA_MODE=production` 後，伺服器啟動與 `deploy:server` 都會檢查，以下任一項存在就拒絕啟動：`KYC_PROTOTYPE_AUTO_APPROVE`、`NEXT_PUBLIC_KYC_SIMULATE`、`MOEACA_TEST_ANCHORS`、`GCIS_COMPANY_URL`、未校準的 `KYC_AUTO_APPROVE`（校準後另設 `KYC_AUTO_CALIBRATED=1`）、非 https 的 `PUBLIC_ORIGIN`。可先執行 `npm run gate` 自行檢查。正式簽章者只會在閘門通過的環境登記。
 
+**伺服器金鑰介面（P3-A1）**：KYC 簽章（`Attested`／`Suspended`／`Revoked`、`KycCredential`）、資料包 ES256 簽章與 `pairwise_id` 的 HMAC 一律經過 `src/server/keys.ts`。`KEY_BACKEND=local`（預設）從 `.env.local` 讀金鑰；改用 KMS／HSM 時新增一個實作並在 `BACKENDS` 註冊，其他程式不用改。KMS 回傳的 secp256k1 簽章多半是 DER、可能是 high-s，請用 `secp256k1FromDer` 轉換（OpenZeppelin ECDSA 拒收 high-s）。發卡方、備援金鑰根金鑰、paymaster 等其他金鑰尚未移入這個介面。
+
+**切換正式 KYC 簽章者（P3-A5）**：
+
+1. `npm run cutover -- prepare`：產生下一把簽章金鑰與新的 pairwise 金鑰（`.env.local` 的 `NEXT_KYC_SIGNER_KEY`、`NEXT_KYC_PAIRWISE_KEY`），印出新簽章者位址。
+2. `npm run cutover -- plan`：列出會以新簽章者重新簽發的帳戶（案件由自動驗證或人工複核核准；法人經人工或工商憑證驗證），以及需要重新驗證的帳戶（原型期放行）。不送任何交易。
+3. `npm run cutover -- execute`：上線閘門必須通過。依序登記新簽章者為 PRODUCTION（v1、v2）→ 重新簽發 → 標記需要重新驗證並把 v1 降為 L0 → 移除舊簽章者（原型期證明在鏈上降為 L0）→ `.env.local` 換成新金鑰（舊檔備份為 `.env.cutover-<時間>.local`）。每一步都可重跑。治理權在多簽時，會印出要由多簽送出的交易，送出後再重跑。
+4. 重新啟動服務。需要重新驗證的使用者在 `/kyc` 會看到提示；pairwise 金鑰一併更換，依賴方先前拿到的 `pairwise_id` 全部失效，請事先通知。
+
+本機演練可加 `--skip-gate`（只允許連到本機 RPC）。
+
 **依賴方資料調閱（規格 §16.6 P2）**：依賴方（交易所等）平常只拿得到使用者同意提供的 claims；遇到洗錢防制調查或司法機關調閱，才以這個 API 申請 CAFECA 保存的實名資料（`src/server/disclosure.ts`）。
 
 1. CAFECA 在 `/admin/rp` 登記依賴方與其 P-256 加密公鑰（對方以 `npm run rp -- keygen` 產生，私鑰自己保管），發給 API 金鑰（只存 SHA-256）。

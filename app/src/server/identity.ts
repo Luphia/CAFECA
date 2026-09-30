@@ -2,8 +2,8 @@ import "server-only";
 import { keccak256, toHex, type Address, type Hex } from "viem";
 import { DEPLOYMENT, IdentityStatus } from "@/lib/config";
 import { attestationRegistryAbi, identityRegistryAbi } from "@/lib/contracts/abis";
-import { operatorTx, publicClient, signerOf } from "./chain";
-import { env } from "./env";
+import { operatorTx, publicClient } from "./chain";
+import { kycSigner, type DigestSigner } from "./keys";
 import type { KycCase } from "./store";
 
 /**
@@ -50,18 +50,19 @@ const jur = (iso2: string) => `0x${Buffer.from(iso2.toUpperCase().slice(0, 2), "
 export async function attestIdentity(
   account: Address,
   p: { subjectType?: 0 | 1; level: number; claimsRoot: Hex; expiry: number; jurisdiction?: string },
+  opts: { signer?: DigestSigner; v1?: boolean } = {},
 ): Promise<{ v1Tx: Hex; v2Tx?: Hex; nonce?: bigint }> {
-  const kyc = signerOf(env.kycSignerKey());
+  const kyc = opts.signer ?? kycSigner();
   // v1 只描述自然人
   let v1Tx: Hex = "0x";
-  if ((p.subjectType ?? 0) === 0) {
+  if ((p.subjectType ?? 0) === 0 && opts.v1 !== false) {
     const digest = await publicClient.readContract({
       address: DEPLOYMENT.attestation,
       abi: attestationRegistryAbi,
       functionName: "attestationDigest",
       args: [account, p.level, p.claimsRoot, p.expiry],
     });
-    const sig = await kyc.sign({ hash: digest });
+    const sig = await kyc.signDigest(digest);
     v1Tx = (await operatorTx({ address: DEPLOYMENT.attestation, abi: attestationRegistryAbi, functionName: "attest", args: [account, p.level, p.claimsRoot, p.expiry, sig] } as never)).transactionHash;
   }
   if (!DEPLOYMENT.identityRegistry) return { v1Tx };
@@ -70,13 +71,13 @@ export async function attestIdentity(
   const j = jur(p.jurisdiction ?? "TW");
   const nonce = await nextNonce(account);
   const digest = await publicClient.readContract({ address: reg, abi: identityRegistryAbi, functionName: "attestDigest", args: [account, st, p.level, p.expiry, p.claimsRoot, j, nonce] });
-  const sig = await kyc.sign({ hash: digest });
+  const sig = await kyc.signDigest(digest);
   const rc = await operatorTx({ address: reg, abi: identityRegistryAbi, functionName: "attest", args: [account, st, p.level, p.expiry, p.claimsRoot, j, nonce, sig] } as never);
   return { v1Tx, v2Tx: rc.transactionHash, nonce };
 }
 
 /** 暫停或撤銷（v2）。v1 沒有撤銷能力，依賴方一律讀 v2 */
-export async function changeIdentityStatus(account: Address, action: "suspend" | "revoke", reason: number): Promise<Hex | null> {
+export async function changeIdentityStatus(account: Address, action: "suspend" | "revoke", reason: number, signer?: DigestSigner): Promise<Hex | null> {
   if (!DEPLOYMENT.identityRegistry) return null;
   const reg = DEPLOYMENT.identityRegistry;
   const cur = await identityState(account);
@@ -85,7 +86,7 @@ export async function changeIdentityStatus(account: Address, action: "suspend" |
   const nonce = await nextNonce(account);
   const status = action === "suspend" ? IdentityStatus.SUSPENDED : IdentityStatus.REVOKED;
   const digest = await publicClient.readContract({ address: reg, abi: identityRegistryAbi, functionName: "statusDigest", args: [account, status, reason, nonce] });
-  const sig = await signerOf(env.kycSignerKey()).sign({ hash: digest });
+  const sig = await (signer ?? kycSigner()).signDigest(digest);
   const rc = await operatorTx({ address: reg, abi: identityRegistryAbi, functionName: action, args: [account, reason, nonce, sig] } as never);
   return rc.transactionHash;
 }

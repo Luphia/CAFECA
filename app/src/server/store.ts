@@ -182,6 +182,8 @@ export type Ticket = {
 export type Pairing = { qx: string; qy: string; rpIdHash: string; name: string; exp: number; createdAt: number; address?: string };
 
 export type KycRecord = {
+  /** 切換正式簽章者時標記：原型期的驗證不再有效，需要重新驗證（P3-A5） */
+  reverify?: { at: number; reason: string };
   level: number;
   ts: number;
   idHash?: string;

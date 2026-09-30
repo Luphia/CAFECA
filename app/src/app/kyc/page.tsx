@@ -19,6 +19,7 @@ type KycView = {
   caseId: string;
   status: "pending" | "processing" | "approved" | "review" | "rejected";
   createdAt: number;
+  reverify?: { at: number; reason: string } | null;
   reasons: string[];
   result: { txHash?: string; error?: string } | null;
   submitted?: { actions: string[] };
@@ -115,12 +116,16 @@ function KycBody() {
   };
 
   const [pending, setPending] = useState<KycView | null>(null);
+  const [reverify, setReverify] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   // 重新整理頁面時，顯示最近一次送出的案件狀態
   useEffect(() => {
     api<KycView>("/api/kyc")
-      .then((v) => (["pending", "processing", "review", "rejected"].includes(v.status) || (v.status === "approved" && !v.result?.txHash)) && setPending(v))
+      .then((v) => {
+        if (v.reverify) setReverify(true);
+        if (["pending", "processing", "review", "rejected"].includes(v.status) || (v.status === "approved" && !v.result?.txHash)) setPending(v);
+      })
       .catch(() => undefined)
       .finally(() => setLoaded(true));
   }, []);
@@ -238,6 +243,11 @@ function KycBody() {
 
   return (
     <>
+      {reverify && !pending && (
+        <Notice tone="warn">
+          <span data-testid="kyc-reverify">CAFECA 已改用正式的實名驗證流程，測試期間的驗證結果已經失效。請重新完成下方驗證，網站看到的實名等級才會恢復。</span>
+        </Notice>
+      )}
       {chain.identityStatus === IdentityStatus.SUSPENDED && (
         <Notice tone="warn">你的實名證明目前暫停中（例如身分恢復後需要重新確認本人）。重新完成下方驗證後就會恢復，網站看到的實名等級也會跟著恢復。</Notice>
       )}

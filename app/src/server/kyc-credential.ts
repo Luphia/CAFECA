@@ -1,6 +1,5 @@
 import "server-only";
-import { createHmac } from "crypto";
-import type { Address, Hex } from "viem";
+import type { Address, Hex, TypedDataDefinition } from "viem";
 import { CHAIN_ID, DEPLOYMENT, IdentityStatus } from "@/lib/config";
 import {
   CREDENTIAL_CLAIMS,
@@ -13,8 +12,7 @@ import {
   type KycCredential,
   type KycCredentialMessage,
 } from "@/lib/kyc-credential";
-import { signerOf } from "./chain";
-import { env } from "./env";
+import { kycSigner, pairwiseMac, signTypedDataWith } from "./keys";
 import { identityState } from "./identity";
 import { read, type KycCase } from "./store";
 
@@ -61,10 +59,9 @@ async function sourceOf(account: Address): Promise<Source | null> {
  * 同一人在同一依賴方永遠相同（換裝置、恢復後也相同），不同依賴方之間無法串連，也推不回證號。
  * K_pairwise（KYC_PAIRWISE_KEY）與 kycIdHash 使用的金鑰分開；正式環境放在 HSM。
  */
-export function pairwiseId(idHash: string, audience: string): Hex | null {
-  const key = env.pairwiseKey();
-  if (!key) return null;
-  return `0x${createHmac("sha256", key).update(`${idHash}|${audience}`).digest("hex")}`;
+export async function pairwiseId(idHash: string, audience: string): Promise<Hex | null> {
+  const mac = pairwiseMac();
+  return mac ? mac.hmacHex(`${idHash}|${audience}`) : null;
 }
 
 export async function availableClaims(account: Address): Promise<AvailableClaims> {
@@ -75,7 +72,7 @@ export async function availableClaims(account: Address): Promise<AvailableClaims
     legal_name: src?.name ?? null,
     doc_type: src?.docType ?? null,
     nationality: src?.nationality ?? null,
-    pairwise_id: !!src?.idHash && !!env.pairwiseKey(),
+    pairwise_id: !!src?.idHash && !!pairwiseMac(),
     entity_ubn: src?.entityUbn ?? null,
     entity_name: src?.entityName ?? null,
   };
@@ -88,7 +85,7 @@ export async function issueCredential(account: Address, p: { audience: string; n
   const [src, st] = await Promise.all([sourceOf(account), identityState(account)]);
   if (!st || st.status !== IdentityStatus.ACTIVE || st.effectiveLevel < 2 || !src) throw new Error("目前沒有有效的 L2 實名證明");
 
-  const pid = want.includes("pairwise_id") && src.idHash ? pairwiseId(src.idHash, p.audience) : null;
+  const pid = want.includes("pairwise_id") && src.idHash ? await pairwiseId(src.idHash, p.audience) : null;
   const value: Record<CredentialClaim, string | null> = {
     legal_name: src.name ?? null,
     doc_type: src.docType ?? null,
@@ -116,7 +113,7 @@ export async function issueCredential(account: Address, p: { audience: string; n
     entityName: has("entity_name") ? value.entity_name! : "",
     disclosed: disclosedString(disclosed),
   };
-  const signature = await signerOf(env.kycSignerKey()).signTypedData(kycCredentialTypedData(CHAIN_ID, DEPLOYMENT.identityRegistry, message));
+  const signature = await signTypedDataWith(kycSigner(), kycCredentialTypedData(CHAIN_ID, DEPLOYMENT.identityRegistry, message) as TypedDataDefinition);
   return { message, signature };
 }
 

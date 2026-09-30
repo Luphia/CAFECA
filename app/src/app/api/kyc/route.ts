@@ -32,14 +32,12 @@ export const GET = handle(async (req: Request) => {
   const me = await requireSession();
   const id = new URL(req.url).searchParams.get("case");
   let c;
+  const rec = Object.entries((await read()).kyc).find(([k]) => k.toLowerCase() === me.toLowerCase())?.[1];
   if (id) c = await findCase(me, id);
-  else {
-    const s = await read();
-    const rec = Object.entries(s.kyc).find(([k]) => k.toLowerCase() === me.toLowerCase())?.[1];
-    c = rec?.cases?.filter((x) => x.purpose === "onboard").sort((a, b) => b.createdAt - a.createdAt)[0];
-  }
+  else c = rec?.cases?.filter((x) => x.purpose === "onboard").sort((a, b) => b.createdAt - a.createdAt)[0];
   if (!c) throw new HttpError(404, "找不到這個驗證案件");
-  const view = publicView(c);
+  // 切換正式簽章者後，原型期的驗證需要重新完成
+  const view = { ...publicView(c), reverify: rec?.reverify && !(c.createdAt > rec.reverify.at) ? rec.reverify : null };
   if (c.status === "approved" && c.purpose === "onboard" && c.result?.txHash && (await currentGuardian(me)) === zeroAddress) {
     const address = guardianAddress(me);
     return Response.json({ ...view, guardian: { address, authoritySig: await authorizeGuardian(me, address) } });

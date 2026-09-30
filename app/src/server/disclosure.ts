@@ -2,8 +2,7 @@ import "server-only";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { promises as fs } from "fs";
 import path from "path";
-import { CompactEncrypt, CompactSign, importJWK, type JWK } from "jose";
-import { p256 } from "@noble/curves/p256";
+import { CompactEncrypt, importJWK, type JWK } from "jose";
 import { getAddress, hashMessage, type Address, type Hex } from "viem";
 import { CHAIN_ID, DEPLOYMENT } from "@/lib/config";
 import { verifySignInResponse, type SignInResponse } from "@/lib/signin";
@@ -12,6 +11,7 @@ import { publicClient } from "./chain";
 import { membersOf } from "./entity";
 import { queryEvents } from "./indexer";
 import { pairwiseId } from "./kyc-credential";
+import { disclosureSigner } from "./keys";
 import { caseDir } from "./kyc-pipeline";
 import { HttpError } from "./session";
 import { read, update, type Disclosure, type RelyingParty, type Store } from "./store";
@@ -158,7 +158,8 @@ async function proveRelationship(rp: RelyingParty, account: Address, p: { signIn
     // 與 KYC Credential 相同的來源：帳戶的 idHash，或最近一次核准案件的證號 HMAC
     const approved = (rec?.cases ?? []).filter((x) => x.status === "approved").sort((a, b) => (b.processedAt ?? b.createdAt) - (a.processedAt ?? a.createdAt))[0];
     const idHash = rec?.idHash ?? approved?.fields?.idNumberHash;
-    const hit = idHash && rp.domains.find((d) => pairwiseId(idHash, d)?.toLowerCase() === p.pairwiseId!.toLowerCase());
+    let hit: string | undefined;
+    if (idHash) for (const d of rp.domains) if ((await pairwiseId(idHash, d))?.toLowerCase() === p.pairwiseId.toLowerCase()) hit = d;
     if (!hit) throw new HttpError(400, "pairwise_id 與這個帳戶及依賴方網域不符");
     return { type: "pairwise", detail: `pairwise_id（${hit}）` };
   }
@@ -313,24 +314,30 @@ export async function rejectDisclosure(who: string, id: string, reason: string) 
 
 // ───────────────────────── 資料包 ─────────────────────────
 
-/** 放行資料包的簽章金鑰（DISCLOSURE_SIGNING_KEY，P-256 私鑰 hex；deploy 自動產生） */
-function signingJwk(): JWK | null {
-  const hex = process.env.DISCLOSURE_SIGNING_KEY;
-  if (!hex || !/^[0-9a-fA-F]{64}$/.test(hex)) return null;
-  const d = Buffer.from(hex, "hex");
-  const pub = p256.getPublicKey(d, false);
-  return { kty: "EC", crv: "P-256", d: d.toString("base64url"), x: Buffer.from(pub.slice(1, 33)).toString("base64url"), y: Buffer.from(pub.slice(33)).toString("base64url") };
+/** 放行資料包的簽章者（DISCLOSURE_SIGNING_KEY 或 KMS，見 server/keys.ts） */
+async function signingKey() {
+  const k = disclosureSigner();
+  if (!k) return null;
+  const { x, y } = await k.publicXY();
+  const jwk = { kty: "EC", crv: "P-256", x: Buffer.from(x).toString("base64url"), y: Buffer.from(y).toString("base64url") };
+  return { k, jwk, kid: "cafeca-disclosure-" + sha(`${jwk.x}.${jwk.y}`).slice(0, 16) };
 }
 
 /** 公開驗章金鑰（/.well-known/cafeca-configuration 的 disclosure.jwks） */
-export function disclosureJwks() {
-  const j = signingJwk();
-  if (!j) return null;
-  return { keys: [{ kty: j.kty, crv: j.crv, x: j.x, y: j.y, kid: kidOf(j), alg: "ES256", use: "sig" }] };
+export async function disclosureJwks() {
+  const s = await signingKey();
+  if (!s) return null;
+  return { keys: [{ ...s.jwk, kid: s.kid, alg: "ES256", use: "sig" }] };
 }
 
-function kidOf(j: JWK) {
-  return "cafeca-disclosure-" + sha(`${j.x}.${j.y}`).slice(0, 16);
+/** Compact JWS（ES256）：簽章交給 P256Signer，私鑰不必離開 KMS */
+async function signJws(payload: unknown) {
+  const s = await signingKey();
+  if (!s) throw new HttpError(503, "尚未設定 DISCLOSURE_SIGNING_KEY");
+  const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+  const input = `${b64({ alg: "ES256", kid: s.kid, typ: "cafeca-disclosure+jws" })}.${b64(payload)}`;
+  const sig = await s.k.signSha256(new TextEncoder().encode(input));
+  return `${input}.${Buffer.from(sig).toString("base64url")}`;
 }
 
 async function collect(s: Store, d: Disclosure, fields: DisclosureField[]) {
@@ -385,8 +392,6 @@ export async function fetchPackage(rp: RelyingParty, id: string) {
   if (!d || d.rp !== rp.id) throw new HttpError(404, "找不到調閱申請");
   if (d.status !== "released" || !d.release) return { ...rpView(d), package: null };
   if (Date.now() > d.release.expiresAt) throw new HttpError(410, "資料包已過期（放行後 7 天內可下載），請重新申請");
-  const jwk = signingJwk();
-  if (!jwk) throw new HttpError(503, "尚未設定 DISCLOSURE_SIGNING_KEY");
   const fields = d.approvals[1].fields;
   const payload = {
     iss: "CAFECA",
@@ -402,9 +407,7 @@ export async function fetchPackage(rp: RelyingParty, id: string) {
     releasedAt: new Date(d.release.at).toISOString(),
     issuedAt: new Date().toISOString(),
   };
-  const jws = await new CompactSign(new TextEncoder().encode(JSON.stringify(payload)))
-    .setProtectedHeader({ alg: "ES256", kid: kidOf(jwk), typ: "cafeca-disclosure+jws" })
-    .sign(await importJWK(jwk, "ES256"));
+  const jws = await signJws(payload);
   const jwe = await new CompactEncrypt(new TextEncoder().encode(jws))
     .setProtectedHeader({ alg: "ECDH-ES", enc: "A256GCM", kid: rp.id, cty: "JWT" })
     .encrypt(await importJWK(rp.encJwk as JWK, "ECDH-ES"));
