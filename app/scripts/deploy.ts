@@ -11,6 +11,8 @@
  * 增量部署法人帳戶（規格 §16.4）：npm run deploy -- --entity
  *   只部署 MemberValidator 與 EntityAccountFactory（讀 IdentityRegistry v2），不動既有自然人帳戶。
  *
+ * 增量部署稽核紀錄上鏈合約（規格 §16.6 P3-A6）：npm run deploy -- --anchor
+ *
  * 增量部署 IdentityRegistry v2（規格 §16.2）：npm run deploy -- --identity
  *   不動工廠與 KeyringValidator（既有身分地址不變），部署 v2、把 v1 仍有效的證明以同一把 KYC 金鑰簽發到 v2，
  *   並重新部署改讀 v2 的 CafecaPaymaster（取回舊 paymaster 的押金）。完成後重新啟動 npm run dev／start。
@@ -110,6 +112,7 @@ async function main() {
   const factoryOnly = process.argv.includes("--factory");
   const identityOnly = process.argv.includes("--identity");
   const entityOnly = process.argv.includes("--entity");
+  const anchorOnly = process.argv.includes("--anchor");
   const deposit = factoryOnly ? 0n : parseEther(env.PAYMASTER_DEPOSIT ?? "5");
   const stake = factoryOnly ? 0n : parseEther(env.PAYMASTER_STAKE ?? "1");
   if (!identityOnly && !entityOnly && balance < deposit + stake + parseEther(factoryOnly ? "0.2" : "1")) {
@@ -243,6 +246,17 @@ async function main() {
     return;
   }
 
+  if (anchorOnly) {
+    if (!existsSync(IN_FILE)) throw new Error("找不到既有部署，請先完整部署");
+    const d = JSON.parse(readFileSync(IN_FILE, "utf8"));
+    if (!d.deployed || d.chainId !== chainId) throw new Error("既有部署不在這條鏈上，請先完整部署");
+    if (d.auditAnchor && !process.argv.includes("--force")) throw new Error(`已經部署過 AuditAnchor（${d.auditAnchor}）；要重新部署請加 --force`);
+    const auditAnchor = await deploy("AuditAnchor", [deployer.address]);
+    writeFileSync(OUT_FILE, JSON.stringify({ ...d, auditAnchor }, null, 2) + "\n");
+    console.log(`完成 ✓ 已寫入 ${path.relative(ROOT, OUT_FILE)}；請重新建置並啟動（npm run build／start）`);
+    return;
+  }
+
   async function migrateAttestations(d: { attestation: Address; startBlock?: number }, registry: Address) {
     const v1 = artifact("AttestationRegistry").abi;
     const v2 = artifact("IdentityRegistry").abi;
@@ -309,6 +323,7 @@ async function main() {
   await send(identityRegistry, "IdentityRegistry", "setSigner", [kycSigner.address, signerCls]);
   const paymaster = await deployPaymaster(entryPoint, identityRegistry, channelManager);
   const { memberValidator, entityFactory } = await deployEntity(accountImpl, identityRegistry, twdc);
+  const auditAnchor = await deploy("AuditAnchor", [deployer.address]);
 
   const out = {
     chainId,
@@ -325,6 +340,7 @@ async function main() {
     deviceDirectory,
     memberValidator,
     entityFactory,
+    auditAnchor,
     paymaster,
     twdc,
     startBlock,

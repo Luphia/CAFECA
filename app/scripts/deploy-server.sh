@@ -13,6 +13,7 @@
 #   SKIP_IDENTITY=1    不自動執行 npm run deploy -- --identity
 #   SKIP_ENTITY=1      不自動執行 npm run deploy -- --entity（法人帳戶合約）
 #   SKIP_CRON=1        不建立 /api/identity/sync 的 crontab
+#   SKIP_ANCHOR=1      不部署稽核紀錄上鏈合約 AuditAnchor
 #   PM2_NAME=cafeca    以 pm2 管理時的程序名稱（預設 cafeca）
 #   SYSTEMD_UNIT=xxx   以 systemd 管理時的服務名稱（設定後改用 systemctl restart）
 #   PORT=10002         npm start 的埠（與 package.json 一致）
@@ -150,6 +151,19 @@ else
   npm run deploy -- --entity
 fi
 
+# ───────────────────────── 5c. 稽核紀錄上鏈合約 ─────────────────────────
+step "稽核紀錄上鏈（AuditAnchor）"
+dep_file="deployments/boltchain-testnet.local.json"
+[ -f "$dep_file" ] || dep_file="deployments/boltchain-testnet.json"
+if node -e "process.exit(require('./$dep_file').auditAnchor ? 0 : 1)" 2>/dev/null; then
+  ok "已部署：$(node -p "require('./$dep_file').auditAnchor")"
+elif [ "${SKIP_ANCHOR:-}" = "1" ]; then
+  warn "SKIP_ANCHOR=1，略過（稽核紀錄不會每日上鏈）"
+else
+  warn "尚未部署，執行 npm run deploy -- --anchor"
+  npm run deploy -- --anchor
+fi
+
 # ───────────────────────── 6. 建置 ─────────────────────────
 step "npm run build（合約地址在建置時寫入，部署合約後一定要重新建置）"
 npm run build
@@ -177,7 +191,7 @@ if [ "${SKIP_CRON:-}" = "1" ]; then
   warn "SKIP_CRON=1，略過"
 elif command -v crontab >/dev/null; then
   ( crontab -l 2>/dev/null | grep -v "# cafeca-identity-sync" | grep -v "# cafeca-entity-sync" | grep -v "# cafeca-maintenance" ; echo "$cron_line" ; echo "$cron_entity" ; echo "$cron_maint" ) | crontab -
-  ok "crontab：身分同步每 5 分鐘、法人商工登記監控每天 03:17、同意逾期與保存期限清除每天 03:41"
+  ok "crontab：身分同步每 5 分鐘、法人商工登記監控每天 03:17、同意逾期、保存期限清除與稽核紀錄上鏈每天 03:41"
 else
   warn "沒有 crontab，請自行每 5 分鐘呼叫：curl -X POST $origin/api/identity/sync"
 fi

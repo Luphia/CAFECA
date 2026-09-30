@@ -12,6 +12,7 @@ const names = {
   TestStable: "TestStable.sol/TestStable",
   MemberValidator: "MemberValidator.sol/MemberValidator",
   EntityAccountFactory: "EntityAccountFactory.sol/EntityAccountFactory",
+  AuditAnchor: "AuditAnchor.sol/AuditAnchor",
 };
 const ts = ["// 由 contracts/out 自動產生，請勿手動編輯", ""];
 for (const [k, v] of Object.entries(names)) {

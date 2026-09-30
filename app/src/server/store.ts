@@ -73,6 +73,8 @@ export type Store = {
   relyingParties?: Record<string, RelyingParty>;
   /** 資料調閱申請 */
   disclosures?: Record<string, Disclosure>;
+  /** 稽核紀錄上鏈紀錄（P3-A6） */
+  auditAnchors?: { count: number; head: string; tx: string; block: number; at: number }[];
   /** 管理後台人員（P3-A3）：每人一個帳號、以 Passkey 登入 */
   staff?: Record<string, Staff>;
   /** 人員邀請碼（只存 SHA-256；72 小時、一次性） */

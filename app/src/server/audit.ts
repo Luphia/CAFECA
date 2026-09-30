@@ -35,7 +35,8 @@ function hashOf(e: Omit<AuditEntry, "hash">): string {
   return createHash("sha256").update(String(e.prev)).update(canonical(e)).digest("hex");
 }
 
-let tail: { seq: number; hash: string } | null = null;
+/** 最後一筆的快取；檔案大小改變（例如 npm run cutover 等其他程序寫入）時重新讀取 */
+let tail: { seq: number; hash: string; size: number } | null = null;
 let lock: Promise<unknown> = Promise.resolve();
 
 async function readAll(): Promise<AuditEntry[]> {
@@ -47,10 +48,11 @@ async function readAll(): Promise<AuditEntry[]> {
 }
 
 async function loadTail() {
-  if (tail) return tail;
+  const size = (await fs.stat(FILE()).catch(() => null))?.size ?? 0;
+  if (tail && tail.size === size) return tail;
   const all = await readAll();
   const last = all[all.length - 1];
-  tail = last ? { seq: last.seq, hash: last.hash } : { seq: 0, hash: GENESIS };
+  tail = last ? { seq: last.seq, hash: last.hash, size } : { seq: 0, hash: GENESIS, size };
   return tail;
 }
 
@@ -61,14 +63,18 @@ export function writeAudit(e: { who: string; action: string; [k: string]: unknow
     const base = { ...JSON.parse(JSON.stringify(e)), seq: t.seq + 1, at: new Date().toISOString(), prev: t.hash } as Omit<AuditEntry, "hash">;
     const entry = { ...base, hash: hashOf(base) } as AuditEntry;
     await fs.mkdir(path.dirname(FILE()), { recursive: true });
-    await fs.appendFile(FILE(), JSON.stringify(entry) + "\n");
-    tail = { seq: entry.seq, hash: entry.hash };
+    const line = JSON.stringify(entry) + "\n";
+    await fs.appendFile(FILE(), line);
+    tail = { seq: entry.seq, hash: entry.hash, size: t.size + Buffer.byteLength(line) };
     return entry;
   };
   const next = lock.then(run, run);
   lock = next.catch(() => undefined);
   return next;
 }
+
+/** 全部紀錄（依序） */
+export const readAuditEntries = () => readAll();
 
 export async function verifyAudit(): Promise<{ ok: boolean; count: number; head: string; brokenAt?: number; reason?: string }> {
   const all = await readAll();

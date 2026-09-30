@@ -2,10 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AdminLogin, adminCall } from "@/components/admin-login";
-import { Button, Notice, Panel, Spinner, errMsg, inputCls } from "@/components/ui";
+import { Button, Notice, Panel, Spinner, TxLink, errMsg, inputCls } from "@/components/ui";
 
 type Entry = { seq: number; at: string; who: string; action: string; hash: string; [k: string]: unknown };
-type Res = { reviewer: string; chain: { ok: boolean; count: number; head: string; brokenAt?: number; reason?: string }; entries: Entry[] };
+type Anchor = { count: number; head: string; tx: string; block: number; at: number; onchain: boolean; match: boolean };
+type Res = {
+  reviewer: string;
+  chain: { ok: boolean; count: number; head: string; brokenAt?: number; reason?: string };
+  anchors: { deployed: boolean; address?: string; lastCount?: number; anchors: Anchor[]; ok: boolean };
+  entries: Entry[];
+};
 
 /** 稽核紀錄：hash-chained，每次開啟都重新驗證整條鏈 */
 export default function AuditPage() {
@@ -41,6 +47,35 @@ export default function AuditPage() {
         ) : (
           <Notice tone="danger"><span data-testid="audit-chain">hash 鏈斷裂：第 {data.chain.brokenAt} 筆，{data.chain.reason}</span></Notice>
         ))}
+      {data && (
+        <Panel
+          title="鏈上錨點"
+          action={data.anchors.deployed ? <Button size="sm" variant="secondary" testId="audit-anchor-now" onClick={async () => { try { await adminCall("/api/admin/audit", {}); await load(); } catch (e) { setErr(errMsg(e)); } }}>立即上鏈</Button> : undefined}
+        >
+          {!data.anchors.deployed ? (
+            <p className="text-sm text-ink-3">尚未部署 AuditAnchor（npm run deploy -- --anchor）。</p>
+          ) : (
+            <div className="space-y-2 text-sm">
+              {data.anchors.ok ? (
+                <p className="text-ok" data-testid="audit-anchors">✓ 目前的紀錄與鏈上 {data.anchors.anchors.length} 個錨點都相符（鏈上最新：第 {data.anchors.lastCount} 筆）</p>
+              ) : (
+                <p className="text-danger" data-testid="audit-anchors">✕ 有錨點與目前的紀錄不符：紀錄在上鏈之後被改寫</p>
+              )}
+              <ul className="divide-y divide-line text-xs">
+                {data.anchors.anchors.slice(0, 10).map((a) => (
+                  <li key={a.tx} className="flex flex-wrap items-center gap-2 py-1.5">
+                    <span className={a.match ? "text-ok" : "text-danger"}>{a.match ? "相符" : "不符"}</span>
+                    <span>第 {a.count} 筆</span>
+                    <span className="font-mono">{a.head.slice(0, 16)}…</span>
+                    <span className="text-ink-3">{new Date(a.at).toLocaleString("zh-TW")}</span>
+                    <TxLink hash={a.tx as `0x${string}`} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Panel>
+      )}
       <Panel>
         <form className="mb-3 flex flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); setQ({ action: String(f.get("action")), subject: String(f.get("subject")) }); }}>
           <input name="action" className={`${inputCls} h-9 w-44`} placeholder="動作前綴（disclosure.）" defaultValue={q.action} />
