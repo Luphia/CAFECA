@@ -11,6 +11,7 @@ type Res = {
     disclosure: { amlBusinessDays: number; authorityBusinessDays: number; consentDays: number; packageDays: number };
     retention: { supersededCaseDays: number; rejectedCaseDays: number; activeEvidence: string };
   };
+  terms: { version: string; hash: string; draft: boolean; accepted: number; everAccepted: number };
   pending: { account: string; caseId: string; why: string; days: number }[];
 };
 
@@ -50,6 +51,12 @@ export default function PolicyPage() {
           ) : (
             <Notice tone="warn"><span data-testid="policy-draft">政策版本 {p.version} 是草案預設值，尚待法遵確認；定案後以環境變數設定並設 POLICY_APPROVED=1。</span></Notice>
           )}
+          <Panel title="服務條款與隱私權告知">
+            <p className="text-sm" data-testid="policy-terms">
+              目前版本 {data!.terms.version}{data!.terms.draft ? "（草案）" : ""} · 內容雜湊 <span className="font-mono">{data!.terms.hash.slice(0, 16)}…</span> · {data!.terms.accepted} 位使用者已同意目前版本（曾同意任何版本：{data!.terms.everAccepted}）
+            </p>
+            <p className="mt-2 text-xs text-ink-3">條款放在 content/terms/&lt;版本&gt;/，以 TERMS_VERSION 切換；切換後所有人都要重新同意。</p>
+          </Panel>
           <Panel title="資料調閱時限">
             <table className="w-full text-left text-sm">
               <tbody className="[&_td]:py-1 [&_th]:w-72 [&_th]:py-1 [&_th]:font-normal [&_th]:text-ink-3">

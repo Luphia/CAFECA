@@ -73,6 +73,8 @@ export type Store = {
   relyingParties?: Record<string, RelyingParty>;
   /** 資料調閱申請 */
   disclosures?: Record<string, Disclosure>;
+  /** 條款同意紀錄（P3-B2）：帳戶（小寫）→ 每次同意的版本、內容雜湊、時間與 Passkey 簽章 */
+  termsConsents?: Record<string, { version: string; hash: string; at: number; signature: string }[]>;
   /** 稽核紀錄上鏈紀錄（P3-A6） */
   auditAnchors?: { count: number; head: string; tx: string; block: number; at: number }[];
   /** 管理後台人員（P3-A3）：每人一個帳號、以 Passkey 登入 */

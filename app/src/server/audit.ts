@@ -60,7 +60,14 @@ async function loadTail() {
 export function writeAudit(e: { who: string; action: string; [k: string]: unknown }): Promise<AuditEntry> {
   const run = async () => {
     const t = await loadTail();
-    const base = { ...JSON.parse(JSON.stringify(e)), seq: t.seq + 1, at: new Date().toISOString(), prev: t.hash } as Omit<AuditEntry, "hash">;
+    // seq／at／prev／hash 是紀錄本身的欄位；呼叫端傳入同名欄位時改名保存，避免覆寫而讓 hash 鏈失效
+    const detail = JSON.parse(JSON.stringify(e)) as Record<string, unknown>;
+    for (const k of ["seq", "at", "prev", "hash"]) {
+      if (!(k in detail)) continue;
+      detail[`detail_${k}`] = detail[k];
+      delete detail[k];
+    }
+    const base = { ...detail, seq: t.seq + 1, at: new Date().toISOString(), prev: t.hash } as Omit<AuditEntry, "hash">;
     const entry = { ...base, hash: hashOf(base) } as AuditEntry;
     await fs.mkdir(path.dirname(FILE()), { recursive: true });
     const line = JSON.stringify(entry) + "\n";

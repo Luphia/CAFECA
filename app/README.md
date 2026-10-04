@@ -214,6 +214,8 @@ npm run build
 
 **保存期限（P3-B5）**：未通過的案件、以及被較新核准案件取代的舊案件，180 天後清除證件影像、臉部影片與人臉特徵（保留案件紀錄與檔案雜湊，清除寫入稽核紀錄）；目前依據的核准案件、調閱與稽核紀錄不自動刪除。每日排程 `POST /api/maintenance`（帶 `x-cafeca-cron: $CRON_SECRET`，`deploy:server` 會產生密鑰並建立 crontab）同時處理同意逾期。`/admin/policy` 顯示目前的數值與即將清除的案件。
 
+**條款同意版本（P3-B2）**：服務條款與隱私權告知放在 `content/terms/<版本>/{terms,privacy}.md`，`TERMS_VERSION` 指定目前版本（預設草案 `draft-2026-09`），`/terms`、`/privacy` 顯示目前版本與內容雜湊。登入後未同意目前版本（版本號或內容雜湊不同都算）時，App 內頁只顯示條款；使用者以 Passkey 簽署「版本＋內容雜湊＋帳戶」（ERC-1271 驗證），簽章存證並寫入稽核紀錄，「安全」頁列出同意紀錄。實名驗證送件要求已同意目前版本（未同意回 428）。定稿後新增一個版本資料夾並改 `TERMS_VERSION`，所有人都會被要求重新同意。
+
 > 以上天數都是**給法律顧問審閱的草案預設值**（`src/server/policy.ts`），可用 `DISCLOSURE_SLA_AML_DAYS`、`DISCLOSURE_SLA_AUTHORITY_DAYS`、`DISCLOSURE_CONSENT_DAYS`、`DISCLOSURE_PACKAGE_DAYS`、`RETENTION_REJECTED_CASE_DAYS`、`RETENTION_SUPERSEDED_CASE_DAYS` 調整；法遵定案後設 `POLICY_APPROVED=1` 與 `POLICY_VERSION`。工作天尚未計入國定假日；帳戶關閉後的保存年限、服務條款同意版本的紀錄，待條款定稿後實作。
 
 `DISCLOSURE_SIGNING_KEY` 由 `npm run deploy`／`deploy:server` 自動產生；更換後依賴方要重新抓 `disclosure.jwks`。法人帳戶目前不接受 `consent` 類申請。

@@ -6,6 +6,7 @@ import { useEffect, type ReactNode } from "react";
 import { DEPLOYMENT } from "@/lib/config";
 import { useWallet } from "./wallet-provider";
 import { CafecaTile } from "./cafeca-logo";
+import { TermsGate } from "./terms-gate";
 import { IdCardIcon, PasskeyIcon } from "./icons";
 import { Badge, Button, cx, Notice, Spinner, errMsg, useToast } from "./ui";
 
@@ -110,6 +111,8 @@ export function AppShell({ children, title, requireSession = true }: { children:
               不是你？登出並切換身分
             </button>
           </div>
+        ) : session ? (
+          <TermsGate key={String(session)} w={wallet}>{children}</TermsGate>
         ) : (
           children
         )}

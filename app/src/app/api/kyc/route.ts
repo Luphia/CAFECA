@@ -3,6 +3,7 @@ import { authorizeGuardian, currentGuardian, guardianAddress } from "@/server/gu
 import { intakeEvidence } from "@/server/kyc";
 import { enqueue, findCase, publicView, saveCase } from "@/server/kyc-queue";
 import { handle, HttpError, requireSession } from "@/server/session";
+import { requireTerms } from "@/server/terms";
 import { effectiveLevel } from "@/server/identity";
 import { read } from "@/server/store";
 
@@ -16,6 +17,7 @@ import { read } from "@/server/store";
  */
 export const POST = handle(async (req: Request) => {
   const me = await requireSession();
+  await requireTerms(me);
   // 已送出的案件還在審核中、或已經通過且仍有效時，不能再送出
   const s = await read();
   const last = Object.entries(s.kyc).find(([k]) => k.toLowerCase() === me.toLowerCase())?.[1]?.cases?.filter((x) => x.purpose === "onboard").sort((a, b) => b.createdAt - a.createdAt)[0];
