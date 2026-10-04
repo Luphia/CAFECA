@@ -17,6 +17,7 @@ export type Deployment = {
   /** 法人帳戶（規格 §16.4）；舊部署沒有時為 undefined（npm run deploy -- --entity 增量部署） */
   memberValidator?: Address;
   auditAnchor?: Address;
+  multisig?: Address;
   entityFactory?: Address;
   paymaster: Address;
   twdc: Address;

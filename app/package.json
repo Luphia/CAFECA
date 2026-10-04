@@ -17,7 +17,8 @@
     "moeaca:inspect": "tsx --conditions react-server scripts/moeaca-inspect.mts",
     "rp": "tsx scripts/rp-client.mts",
     "gate": "tsx scripts/launch-gate.mts",
-    "cutover": "tsx --conditions react-server scripts/signer-cutover.mts"
+    "cutover": "tsx --conditions react-server scripts/signer-cutover.mts",
+    "multisig": "tsx scripts/multisig.mts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",

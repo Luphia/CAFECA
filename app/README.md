@@ -182,6 +182,16 @@ npm run build
 
 本機演練可加 `--skip-gate`（只允許連到本機 RPC）。
 
+**治理權移交多簽（P3-A2）**：
+
+1. 準備 2 到 5 位成員的 EOA（各自保管，建議硬體錢包，不放在伺服器）。
+2. `npm run multisig -- deploy --owners 0xA,0xB,0xC --threshold 2`：部署 `CafecaMultisig`。
+3. `npm run multisig -- handover`：部署者把 IdentityRegistry 治理權（兩段式）與 AuditAnchor 管理權交給多簽，並產生「多簽接受治理權」的提案檔（`data/multisig/`）。營運錢包仍是 anchorer，每日上鏈照常。
+4. 各成員在自己的裝置 `MULTISIG_SIGNER_KEY=0x… npm run multisig -- sign <提案檔>`，達門檻後 `npm run multisig -- execute <提案檔>`。
+5. 之後登記或移除 KYC 簽章者都要多簽：`npm run cutover -- execute` 遇到多簽會印出 `npm run multisig -- propose …`，執行、簽署後重跑即可。`npm run multisig -- status` 查看目前狀態。
+
+額度管理權（`limitAdmin`）預設**不**移交：`/admin/limits` 由營運錢包直接調整，移交後後台無法調整。要移交請加 `handover --limits`。v1 AttestationRegistry 的治理權是 immutable，只能留在部署者（只影響綁卡門檻，依賴方讀 v2）。
+
 **依賴方資料調閱（規格 §16.6 P2）**：依賴方（交易所等）平常只拿得到使用者同意提供的 claims；遇到洗錢防制調查或司法機關調閱，才以這個 API 申請 CAFECA 保存的實名資料（`src/server/disclosure.ts`）。
 
 1. CAFECA 在 `/admin/rp` 登記依賴方與其 P-256 加密公鑰（對方以 `npm run rp -- keygen` 產生，私鑰自己保管），發給 API 金鑰（只存 SHA-256）。

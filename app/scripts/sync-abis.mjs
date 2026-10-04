@@ -13,6 +13,7 @@ const names = {
   MemberValidator: "MemberValidator.sol/MemberValidator",
   EntityAccountFactory: "EntityAccountFactory.sol/EntityAccountFactory",
   AuditAnchor: "AuditAnchor.sol/AuditAnchor",
+  CafecaMultisig: "CafecaMultisig.sol/CafecaMultisig",
 };
 const ts = ["// 由 contracts/out 自動產生，請勿手動編輯", ""];
 for (const [k, v] of Object.entries(names)) {

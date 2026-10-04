@@ -150,7 +150,8 @@ await writeAudit({ who, action: "signer.cutover.start", old: oldAddr, next: newA
 async function governed(address: Address, abi: readonly unknown[], functionName: string, args: unknown[], label: string) {
   const gov = (await publicClient.readContract({ address, abi: abi as never, functionName: "governance" })) as Address;
   if (gov.toLowerCase() !== operator.toLowerCase()) {
-    console.log(`\n${label}：治理權在 ${gov}，請由多簽送出以下交易後重跑 execute：\n  to   ${address}\n  data ${encodeFunctionData({ abi: abi as never, functionName, args } as never)}`);
+    const data = encodeFunctionData({ abi: abi as never, functionName, args } as never);
+    console.log(`\n${label}：治理權在 ${gov}（多簽）。請建立提案、由成員簽署並執行後，再重跑 execute：\n  npm run multisig -- propose --to ${address} --data ${data} --note "${label}"`);
     process.exit(2);
   }
   const rc = await operatorTx({ address, abi, functionName, args } as never);
