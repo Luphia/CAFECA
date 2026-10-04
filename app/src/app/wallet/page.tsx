@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { encodeFunctionData, erc20Abi, formatEther, formatUnits, getAddress, isAddress, parseUnits, type Address, type Hex } from "viem";
-import { DEPLOYMENT, EXPLORER, Req, TWDC_DECIMALS } from "@/lib/config";
+import { encodeAbiParameters, encodeFunctionData, erc20Abi, formatEther, formatUnits, getAddress, isAddress, keccak256, parseEther, parseUnits, zeroAddress, type Address, type Hex } from "viem";
+import { Action, DEPLOYMENT, EXPLORER, Req, TWDC_DECIMALS } from "@/lib/config";
 import { keyringValidatorAbi } from "@/lib/contracts/abis";
 import { api, preview, publicClient, smartSigner, submitOp } from "@/lib/client";
 import { execCall } from "@/lib/userop";
+import { runOp, saveSchedule } from "@/lib/actions";
 import { buildDeeplink } from "@/lib/deeplink";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
@@ -38,6 +39,7 @@ function WalletBody() {
   const [limit, setLimit] = useState<{ perTx: bigint; daily: bigint; spent: bigint } | null>(null);
   const [activity, setActivity] = useState<Activity[]>([]);
   const [assetIdx, setAssetIdx] = useState(0);
+  const [native, setNative] = useState<NativeStatus | null>(null);
   const [view, setView] = useState<"assets" | "agents">("assets");
   const carouselRef = useRef<HTMLDivElement>(null);
   const address = wallet!.address;
@@ -50,6 +52,10 @@ function WalletBody() {
     const inWindow = Date.now() / 1000 < Number(windowStart) + 86400;
     setLimit({ perTx, daily, spent: inWindow ? spent : 0n });
   }, [address]);
+
+  const loadNative = useCallback(async () => {
+    setNative(await api<NativeStatus>("/api/limits/native").catch(() => null));
+  }, []);
 
   const loadActivity = useCallback(async () => {
     try {
@@ -66,8 +72,9 @@ function WalletBody() {
     // 讀取鏈上資料（外部系統同步）
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadLimits().catch(() => undefined);
+    loadNative();
     loadActivity();
-  }, [loadLimits, loadActivity, chain.twdc]);
+  }, [loadLimits, loadNative, loadActivity, chain.twdc, chain.bolt]);
 
   // 收款 QR：CAFECA pay 深連結（手機相機掃描即開啟付款畫面；其他錢包仍可從連結中讀出地址）
   const payLink = buildDeeplink({ action: "pay", to: address });
@@ -96,8 +103,17 @@ function WalletBody() {
     return r.address;
   };
 
+  const asset = ASSETS[assetIdx];
+
   const buildCall = async () => {
     const dest = await resolveTo();
+    if (asset.sym === "BOLT") {
+      // 原生幣：直接帶 value 呼叫收款地址
+      const value = parseEther(amount || "0");
+      if (value <= 0n) throw new Error("請輸入金額");
+      if (value > chain.bolt) throw new Error("BOLT 餘額不足");
+      return execCall(dest, "0x", value);
+    }
     const value = parseUnits(amount || "0", TWDC_DECIMALS);
     if (value <= 0n) throw new Error("請輸入金額");
     return execCall(DEPLOYMENT.twdc, encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [dest, value] }));
@@ -116,7 +132,7 @@ function WalletBody() {
     }, 400);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [amount, to]);
+  }, [amount, to, assetIdx]);
 
   const send = async () => {
     setBusy(true);
@@ -130,6 +146,38 @@ function WalletBody() {
       setTab("none");
       await refresh();
       await loadLimits();
+      await loadNative();
+    } catch (e) {
+      toast(errMsg(e), "danger");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 啟用平台預設 BOLT 額度：v2 由管理者帳戶設定；v1 由帳戶自己設定（綁卡即時、否則排程 72 小時） */
+  const enableNative = async () => {
+    if (!native) return;
+    setBusy(true);
+    try {
+      if (native.mode === "admin") {
+        const r = await api<{ txHash: Hex }>("/api/limits/native", {});
+        toast(<span>已啟用 BOLT 轉帳 <TxLink hash={r.txHash} /></span>, "ok");
+      } else {
+        const perTx = BigInt(native.defaults.perTx), daily = BigInt(native.defaults.daily);
+        if (chain.masterMode) {
+          const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "setLimits", args: [zeroAddress, perTx, daily] }));
+          const res = await runOp(wallet!, call, confirmOnCard);
+          toast(<span>已啟用 BOLT 轉帳 <TxLink hash={res.txHash} /></span>, "ok");
+        } else {
+          const payload = encodeAbiParameters([{ type: "address" }, { type: "uint128" }, { type: "uint128" }], [zeroAddress, perTx, daily]);
+          const call = execCall(DEPLOYMENT.keyring, encodeFunctionData({ abi: keyringValidatorAbi, functionName: "schedule", args: [Action.SET_LIMITS, payload] }));
+          await runOp(wallet!, call, confirmOnCard);
+          const hash = keccak256(encodeAbiParameters([{ type: "uint8" }, { type: "bytes" }], [Action.SET_LIMITS, payload]));
+          saveSchedule({ hash, action: Action.SET_LIMITS, payload, label: `啟用 BOLT 轉帳額度（每筆 ${formatEther(perTx)}、每日 ${formatEther(daily)} BOLT）`, readyAt: Math.floor(Date.now() / 1000) + 72 * 3600, account: address });
+          toast("已排程：72 小時後到「安全」頁執行即可啟用", "ok");
+        }
+      }
+      await loadNative();
     } catch (e) {
       toast(errMsg(e), "danger");
     } finally {
@@ -150,7 +198,6 @@ function WalletBody() {
     }
   };
 
-  const asset = ASSETS[assetIdx];
   const balanceOf = (sym: AssetSym) => (sym === "TWDC" ? chain.twdc : chain.bolt);
   const fmtAsset = (sym: AssetSym, v: bigint) =>
     sym === "TWDC" ? fmtTwdc(v) : Number(formatEther(v)).toLocaleString("zh-TW", { maximumFractionDigits: 4 });
@@ -161,7 +208,7 @@ function WalletBody() {
     const i = Math.round(el.scrollLeft / (el.clientWidth * 0.86));
     if (i !== assetIdx && i >= 0 && i < ASSETS.length) {
       setAssetIdx(i);
-      if (ASSETS[i].sym !== "TWDC" && tab === "send") setTab("none");
+      setAmount("");
     }
   };
   const goAsset = (i: number) => {
@@ -240,7 +287,6 @@ function WalletBody() {
       {/* 快速動作 */}
       <div className="grid grid-cols-4 gap-2">
         <ActionTile label="轉帳" active={tab === "send"} icon="M5 12h14M13 6l6 6-6 6" onClick={() => {
-          if (asset.sym !== "TWDC") return toast("BOLT 只用來支付 gas，由平台全額贊助，不需要轉帳", "neutral");
           setView("assets");
           setTab(tab === "send" ? "none" : "send");
         }} />
@@ -270,22 +316,25 @@ function WalletBody() {
       ) : (
         <>
           {tab === "send" && (
-            <Panel title="轉帳 TWDC" className="rise">
+            <Panel title={`轉帳 ${asset.sym}`} className="rise">
               <div className="space-y-3">
                 <Field label="收款人" hint="代稱（例：@alice）、0x 地址，或按右側圖示掃描收款 QR">
-                  <AddressInput value={to} onChange={setTo} onScanAmount={(v) => setAmount(formatUnits(v, TWDC_DECIMALS))} placeholder="@alice 或 0x…" />
+                  <AddressInput value={to} onChange={setTo} onScanAmount={(v) => asset.sym === "TWDC" && setAmount(formatUnits(v, TWDC_DECIMALS))} placeholder="@alice 或 0x…" />
                 </Field>
-                <Field label="金額">
-                  <input className={inputCls} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
+                <Field label={`金額（${asset.sym}）`}>
+                  <input className={inputCls} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" data-testid="send-amount" />
                 </Field>
+                {asset.sym === "BOLT" && native && !native.enabled && (
+                  <Notice tone="warn">BOLT 轉帳額度尚未啟用，請先在下方啟用；綁定 CAFECA 卡的帳戶也可以直接用卡片確認這筆轉帳。</Notice>
+                )}
                 {hint && (
                   <Notice tone={hint.req === Req.MASTER ? "brand" : hint.req === Req.REJECT ? "danger" : "neutral"}>
                     {hint.req === Req.DAILY && "在日常額度內，用手機 Passkey 即可。"}
                     {hint.req === Req.MASTER && "超過日常額度：需要 CAFECA 卡在螢幕上確認金額與收款人。"}
-                    {hint.req === Req.REJECT && "超過標準模式的額度上限。綁定 CAFECA 卡後可進行大額轉帳。"}
+                    {hint.req === Req.REJECT && (asset.sym === "BOLT" && native && !native.enabled ? "BOLT 轉帳額度尚未啟用。" : "超過標準模式的額度上限。綁定 CAFECA 卡後可進行大額轉帳。")}
                   </Notice>
                 )}
-                <Button className="w-full" onClick={send} busy={busy} disabled={!to || !amount}>送出</Button>
+                <Button className="w-full" onClick={send} busy={busy} disabled={!to || !amount} testId="send-submit">送出</Button>
               </div>
             </Panel>
           )}
@@ -350,11 +399,26 @@ function WalletBody() {
               </Panel>
             </>
           ) : (
-            <Panel title="BOLT">
-              <p className="text-sm text-ink-2">
-                BOLT 是 Boltchain 的原生幣，用來支付交易手續費。CAFECA 由平台全額贊助 gas，你不需要持有或轉帳 BOLT。
-              </p>
-              <a href={`${EXPLORER}/address/${address}`} target="_blank" rel="noreferrer" className="mt-3 inline-block text-sm text-brand">
+            <Panel title="BOLT 轉帳額度">
+              {!native ? (
+                <Spinner className="text-brand" />
+              ) : native.enabled ? (
+                <div className="grid grid-cols-3 gap-2 text-sm" data-testid="bolt-limits">
+                  <div className="rounded-xl border border-line px-3 py-2"><div className="text-xs text-ink-3">單筆上限</div><div className="font-semibold">{fmtBolt(native.perTx)}</div></div>
+                  <div className="rounded-xl border border-line px-3 py-2"><div className="text-xs text-ink-3">每日上限</div><div className="font-semibold">{fmtBolt(native.daily)}</div></div>
+                  <div className="rounded-xl border border-line px-3 py-2"><div className="text-xs text-ink-3">今日已用</div><div className="font-semibold">{fmtBolt(native.spent)}</div></div>
+                </div>
+              ) : (
+                <div className="space-y-2 text-sm" data-testid="bolt-enable">
+                  <p className="text-ink-2">BOLT 轉帳額度尚未啟用（目前為 0，轉出都會被判定超額）。可啟用平台預設額度：每筆 {fmtBolt(native.defaults.perTx)}、每日 {fmtBolt(native.defaults.daily)} BOLT。</p>
+                  <Button className="w-full" onClick={enableNative} busy={busy} testId="bolt-enable-btn">
+                    {native.mode === "admin" ? "啟用 BOLT 轉帳" : chain.masterMode ? "用 CAFECA 卡確認啟用" : "排程啟用（72 小時後生效）"}
+                  </Button>
+                  {native.mode === "self" && !chain.masterMode && <p className="text-xs text-ink-3">為了防止金鑰被盜後立刻調高額度，沒有綁卡的帳戶需要等待 72 小時，屆時到「安全」頁的排程中執行。</p>}
+                </div>
+              )}
+              <p className="mt-3 text-xs text-ink-3">BOLT 是 Boltchain 的原生幣；CAFECA 的交易手續費由平台贊助，轉出 BOLT 不需要另付 gas。</p>
+              <a href={`${EXPLORER}/address/${address}`} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm text-brand">
                 在區塊鏈瀏覽器查看 →
               </a>
             </Panel>
@@ -368,8 +432,11 @@ function WalletBody() {
 type AssetSym = "TWDC" | "BOLT";
 const ASSETS: { sym: AssetSym; name: string; glyph: string; tag: string }[] = [
   { sym: "TWDC", name: "新台幣穩定幣（測試網）", glyph: "NT", tag: "可轉帳" },
-  { sym: "BOLT", name: "Boltchain 原生幣", glyph: "⚡", tag: "gas 由平台贊助" },
+  { sym: "BOLT", name: "Boltchain 原生幣", glyph: "⚡", tag: "可轉帳" },
 ];
+
+type NativeStatus = { perTx: string; daily: string; spent: string; enabled: boolean; defaults: { perTx: string; daily: string }; mode: "admin" | "self" };
+const fmtBolt = (wei: string) => Number(formatEther(BigInt(wei))).toLocaleString("zh-TW", { maximumFractionDigits: 4 });
 
 function ActionTile({ label, icon, onClick, active, busy }: { label: string; icon: string; onClick: () => void; active?: boolean; busy?: boolean }) {
   return (

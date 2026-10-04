@@ -10,7 +10,7 @@ import { queryEvents, syncIndex } from "./indexer";
  * 測試網 limitAdmin＝營運錢包；正式環境改為多簽，後台只負責產生交易。
  */
 
-export const LIMIT_REASONS: Record<number, string> = { 1: "使用者申請", 2: "風控調降", 3: "實名等級變更", 4: "法遵要求", 255: "其他" };
+export const LIMIT_REASONS: Record<number, string> = { 1: "使用者申請", 2: "風控調降", 3: "實名等級變更", 4: "法遵要求", 5: "啟用 BOLT 預設額度", 255: "其他" };
 
 
 /** 目前部署的 KeyringValidator 是否支援管理者調整（v1 沒有 limitAdmin） */

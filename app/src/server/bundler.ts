@@ -27,6 +27,7 @@ import {
 import { nonceKey, type UserOp } from "@/lib/userop";
 import { publicClient, operatorWallet, serialize, signerOf } from "./chain";
 import { env } from "./env";
+import { isNativeDefaultInit } from "./native-limits";
 import { HttpError } from "./session";
 
 const ALL_ERRORS = [
@@ -63,7 +64,7 @@ function opForAbi(op: UserOp) {
  * 交易額度只能由管理者調整：拒絕贊助任何「帳戶自行修改額度」的 UserOp。
  * KeyringValidator v2 在鏈上直接拒絕；v1（舊部署）靠這裡擋下，並由 paymaster 不贊助。
  */
-export function assertNoSelfLimitChange(callData: Hex) {
+export async function assertNoSelfLimitChange(callData: Hex, sender?: Address) {
   let execs: { target: Address; data: Hex }[] = [];
   try {
     const { functionName, args } = decodeFunctionData({ abi: cafecaAccountAbi, data: callData });
@@ -89,6 +90,8 @@ export function assertNoSelfLimitChange(callData: Hex) {
     }
     const setLimitsAction = 2; // Action.SET_LIMITS
     if (fn === "setLimits" || ((fn === "schedule" || fn === "executeScheduled") && Number(fargs[0]) === setLimitsAction)) {
+      // 唯一例外：BOLT 額度從 0 設為平台預設值（見 native-limits.ts）
+      if (sender && (await isNativeDefaultInit(sender, fn, fargs))) continue;
       throw new HttpError(403, "交易額度只能由 CAFECA 管理者調整，請聯絡客服");
     }
   }
@@ -100,7 +103,7 @@ export async function prepareUserOp(p: {
   callData: Hex;
   initCode?: Hex;
 }): Promise<{ userOp: UserOp; userOpHash: Hex }> {
-  assertNoSelfLimitChange(p.callData);
+  await assertNoSelfLimitChange(p.callData, p.sender);
   const d = DEPLOYMENT;
   const nonce = await publicClient.readContract({
     address: d.entryPoint,
