@@ -7,7 +7,7 @@ import { Action, DEPLOYMENT, EXPLORER, Req, TWDC_DECIMALS } from "@/lib/config";
 import { keyringValidatorAbi } from "@/lib/contracts/abis";
 import { api, preview, publicClient, smartSigner, submitOp } from "@/lib/client";
 import { execCall } from "@/lib/userop";
-import { runOp, saveSchedule } from "@/lib/actions";
+import { loadSchedules, runOp, saveSchedule, scheduledReadyAt } from "@/lib/actions";
 import { buildDeeplink } from "@/lib/deeplink";
 import { AppShell } from "@/components/app-shell";
 import { useCardConfirm } from "@/components/card-provider";
@@ -40,6 +40,8 @@ function WalletBody() {
   const [activity, setActivity] = useState<Activity[]>([]);
   const [assetIdx, setAssetIdx] = useState(0);
   const [native, setNative] = useState<NativeStatus | null>(null);
+  /** v1：已排程啟用 BOLT 額度、尚未執行時的生效時間（秒） */
+  const [boltScheduled, setBoltScheduled] = useState<{ at: number; ready: boolean } | null>(null);
   const [view, setView] = useState<"assets" | "agents">("assets");
   const carouselRef = useRef<HTMLDivElement>(null);
   const address = wallet!.address;
@@ -54,8 +56,12 @@ function WalletBody() {
   }, [address]);
 
   const loadNative = useCallback(async () => {
-    setNative(await api<NativeStatus>("/api/limits/native").catch(() => null));
-  }, []);
+    const st = await api<NativeStatus>("/api/limits/native").catch(() => null);
+    setNative(st);
+    const pending = st && !st.enabled ? loadSchedules(address).find((x) => x.action === Action.SET_LIMITS && x.label.startsWith("啟用 BOLT")) : undefined;
+    const ready = pending ? Number(await scheduledReadyAt(address, pending.hash).catch(() => 0)) : 0;
+    setBoltScheduled(ready > 0 ? { at: ready, ready: ready <= Date.now() / 1000 } : null);
+  }, [address]);
 
   const loadActivity = useCallback(async () => {
     try {
@@ -198,6 +204,8 @@ function WalletBody() {
     }
   };
 
+  // BOLT 額度為 0：沒有綁卡就送不出去，先啟用額度
+  const boltLocked = asset.sym === "BOLT" && !!native && !native.enabled;
   const balanceOf = (sym: AssetSym) => (sym === "TWDC" ? chain.twdc : chain.bolt);
   const fmtAsset = (sym: AssetSym, v: bigint) =>
     sym === "TWDC" ? fmtTwdc(v) : Number(formatEther(v)).toLocaleString("zh-TW", { maximumFractionDigits: 4 });
@@ -324,17 +332,18 @@ function WalletBody() {
                 <Field label={`金額（${asset.sym}）`}>
                   <input className={inputCls} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" data-testid="send-amount" />
                 </Field>
-                {asset.sym === "BOLT" && native && !native.enabled && (
-                  <Notice tone="warn">BOLT 轉帳額度尚未啟用，請先在下方啟用；綁定 CAFECA 卡的帳戶也可以直接用卡片確認這筆轉帳。</Notice>
-                )}
-                {hint && (
+                {boltLocked ? (
+                  <BoltEnable native={native!} card={chain.masterMode} scheduled={boltScheduled} busy={busy} onEnable={enableNative} />
+                ) : hint && (
                   <Notice tone={hint.req === Req.MASTER ? "brand" : hint.req === Req.REJECT ? "danger" : "neutral"}>
                     {hint.req === Req.DAILY && "在日常額度內，用手機 Passkey 即可。"}
                     {hint.req === Req.MASTER && "超過日常額度：需要 CAFECA 卡在螢幕上確認金額與收款人。"}
-                    {hint.req === Req.REJECT && (asset.sym === "BOLT" && native && !native.enabled ? "BOLT 轉帳額度尚未啟用。" : "超過標準模式的額度上限。綁定 CAFECA 卡後可進行大額轉帳。")}
+                    {hint.req === Req.REJECT && "超過標準模式的額度上限。綁定 CAFECA 卡後可進行大額轉帳。"}
                   </Notice>
                 )}
-                <Button className="w-full" onClick={send} busy={busy} disabled={!to || !amount} testId="send-submit">送出</Button>
+                <Button className="w-full" onClick={send} busy={busy} disabled={!to || !amount || (boltLocked && !chain.masterMode)} testId="send-submit">
+                  {boltLocked && chain.masterMode ? "用 CAFECA 卡確認送出" : "送出"}
+                </Button>
               </div>
             </Panel>
           )}
@@ -409,13 +418,7 @@ function WalletBody() {
                   <div className="rounded-xl border border-line px-3 py-2"><div className="text-xs text-ink-3">今日已用</div><div className="font-semibold">{fmtBolt(native.spent)}</div></div>
                 </div>
               ) : (
-                <div className="space-y-2 text-sm" data-testid="bolt-enable">
-                  <p className="text-ink-2">BOLT 轉帳額度尚未啟用（目前為 0，轉出都會被判定超額）。可啟用平台預設額度：每筆 {fmtBolt(native.defaults.perTx)}、每日 {fmtBolt(native.defaults.daily)} BOLT。</p>
-                  <Button className="w-full" onClick={enableNative} busy={busy} testId="bolt-enable-btn">
-                    {native.mode === "admin" ? "啟用 BOLT 轉帳" : chain.masterMode ? "用 CAFECA 卡確認啟用" : "排程啟用（72 小時後生效）"}
-                  </Button>
-                  {native.mode === "self" && !chain.masterMode && <p className="text-xs text-ink-3">為了防止金鑰被盜後立刻調高額度，沒有綁卡的帳戶需要等待 72 小時，屆時到「安全」頁的排程中執行。</p>}
-                </div>
+                <BoltEnable native={native} card={chain.masterMode} scheduled={boltScheduled} busy={busy} onEnable={enableNative} />
               )}
               <p className="mt-3 text-xs text-ink-3">BOLT 是 Boltchain 的原生幣；CAFECA 的交易手續費由平台贊助，轉出 BOLT 不需要另付 gas。</p>
               <a href={`${EXPLORER}/address/${address}`} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm text-brand">
@@ -434,6 +437,30 @@ const ASSETS: { sym: AssetSym; name: string; glyph: string; tag: string }[] = [
   { sym: "TWDC", name: "新台幣穩定幣（測試網）", glyph: "NT", tag: "可轉帳" },
   { sym: "BOLT", name: "Boltchain 原生幣", glyph: "⚡", tag: "可轉帳" },
 ];
+
+/** 啟用 BOLT 轉帳額度：v2 由管理者帳戶即時設定；v1 綁卡者用卡片確認，否則排程 72 小時 */
+function BoltEnable({ native, card, scheduled, busy, onEnable }: { native: NativeStatus; card: boolean; scheduled: { at: number; ready: boolean } | null; busy: boolean; onEnable: () => void }) {
+  return (
+    <div className="space-y-2 rounded-2xl border border-warn/40 bg-warn-bg p-3 text-sm" data-testid="bolt-enable">
+      <p className="text-ink">
+        BOLT 轉帳額度尚未啟用（目前為 0）。啟用後可轉出：每筆 {fmtBolt(native.defaults.perTx)}、每日 {fmtBolt(native.defaults.daily)} BOLT。
+      </p>
+      {scheduled ? (
+        <p className="text-ink-2" data-testid="bolt-scheduled">
+          已排程啟用，{scheduled.ready ? "現在可以" : `${new Date(scheduled.at * 1000).toLocaleString("zh-TW")} 後可以`}到「安全」頁的「排程中的變更」執行。{card ? "已綁卡的帳戶也可以直接用卡片確認啟用。" : ""}
+        </p>
+      ) : null}
+      {(!scheduled || card) && (
+        <Button className="w-full" onClick={onEnable} busy={busy} testId="bolt-enable-btn">
+          {native.mode === "admin" ? "啟用 BOLT 轉帳" : card ? "用 CAFECA 卡確認啟用" : "排程啟用（72 小時後生效）"}
+        </Button>
+      )}
+      {native.mode === "self" && !card && !scheduled && (
+        <p className="text-xs text-ink-3">為了防止金鑰被盜後立刻調高額度，沒有綁卡的帳戶要等 72 小時才能生效。綁定 CAFECA 卡可以立即啟用，也可以直接用卡片確認單筆轉帳。</p>
+      )}
+    </div>
+  );
+}
 
 type NativeStatus = { perTx: string; daily: string; spent: string; enabled: boolean; defaults: { perTx: string; daily: string }; mode: "admin" | "self" };
 const fmtBolt = (wei: string) => Number(formatEther(BigInt(wei))).toLocaleString("zh-TW", { maximumFractionDigits: 4 });
