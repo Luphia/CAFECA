@@ -19,6 +19,8 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_CAFECA_DEPLOYMENT: loadDeployment(),
   },
+  // PKCS#11（HSM）原生模組只在伺服器執行時載入，不打包
+  serverExternalPackages: ["pkcs11js"],
   // Sign in with CAFECA（規格 §15）：公開的探索文件
   async rewrites() {
     return [{ source: "/.well-known/cafeca-configuration", destination: "/api/signin/config" }];

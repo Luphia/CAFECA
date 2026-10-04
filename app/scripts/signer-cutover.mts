@@ -55,18 +55,36 @@ const { generatePrivateKey } = await import("viem/accounts");
 const { randomBytes } = await import("crypto");
 
 if (cmd === "prepare") {
-  if ((process.env.KEY_BACKEND ?? "local") !== "local") {
-    console.log(`KEY_BACKEND=${process.env.KEY_BACKEND}：請在 KMS／HSM 建立下一把 secp256k1 簽章金鑰與 HMAC 金鑰，並設定該實作的 next 金鑰。`);
+  const nextBackend = process.env.KEY_BACKEND_NEXT ?? process.env.KEY_BACKEND ?? "local";
+  const add: Record<string, string> = {};
+  if (nextBackend === "pkcs11") {
+    // 在 HSM 內產生下一把簽章金鑰與 pairwise 金鑰（不可匯出）；資料包簽章金鑰沒有就一併建立
+    const { pkcs11Generate } = await import("../src/server/keys-pkcs11");
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+    const want: [string, "secp256k1" | "hmac" | "p256", string][] = [
+      ["PKCS11_NEXT_KYC_SIGNER_LABEL", "secp256k1", `cafeca-kyc-${stamp}`],
+      ["PKCS11_NEXT_PAIRWISE_LABEL", "hmac", `cafeca-pairwise-${stamp}`],
+      ["PKCS11_DISCLOSURE_LABEL", "p256", `cafeca-disclosure-${stamp}`],
+    ];
+    for (const [envName, kind, label] of want) {
+      const l = process.env[envName] ?? label;
+      const r = await pkcs11Generate(kind, l);
+      console.log(`${r === "created" ? "✓ 已在 HSM 建立" : "· HSM 已有"} ${kind} 金鑰「${l}」`);
+      if (!process.env[envName]) add[envName] = l;
+    }
+    if (process.env.KEY_BACKEND !== "pkcs11" && !process.env.KEY_BACKEND_NEXT) add.KEY_BACKEND_NEXT = "pkcs11";
+  } else if (nextBackend === "local") {
+    if (!process.env.NEXT_KYC_SIGNER_KEY) add.NEXT_KYC_SIGNER_KEY = generatePrivateKey();
+    if (!process.env.NEXT_KYC_PAIRWISE_KEY) add.NEXT_KYC_PAIRWISE_KEY = randomBytes(32).toString("hex");
+  } else {
+    console.log(`KEY_BACKEND=${nextBackend}：請在該 KMS 建立下一把 secp256k1 簽章金鑰與 HMAC 金鑰，並設定 next 金鑰。`);
     process.exit(0);
   }
-  const add: Record<string, string> = {};
-  if (!process.env.NEXT_KYC_SIGNER_KEY) add.NEXT_KYC_SIGNER_KEY = generatePrivateKey();
-  if (!process.env.NEXT_KYC_PAIRWISE_KEY) add.NEXT_KYC_PAIRWISE_KEY = randomBytes(32).toString("hex");
   if (Object.keys(add).length) setEnvLines(add);
   Object.assign(process.env, add);
   const { kycSigner } = await import("../src/server/keys");
   console.log("下一把 KYC 簽章者：", await kycSigner("next").address());
-  console.log(Object.keys(add).length ? `已寫入 .env.local：${Object.keys(add).join("、")}` : "NEXT_* 已存在，未變更");
+  console.log(Object.keys(add).length ? `已寫入 .env.local：${Object.keys(add).join("、")}` : "下一把金鑰已設定，未變更");
   process.exit(0);
 }
 
@@ -203,15 +221,35 @@ if (await publicClient.readContract({ address: v1, abi: attestationRegistryAbi, 
   await governed(v1, attestationRegistryAbi, "setKycSigner", [oldAddr, false], "v1 移除舊簽章者");
 
 // 6) 換金鑰
-if ((process.env.KEY_BACKEND ?? "local") === "local") {
-  const backup = `.env.cutover-${new Date().toISOString().replace(/[:.]/g, "-")}.local`;
-  copyFileSync(ENV_FILE, backup);
-  const fileNextSigner = readFileSync(ENV_FILE, "utf8").match(/^NEXT_KYC_SIGNER_KEY=(.*)$/m)?.[1];
-  const fileNextPairwise = readFileSync(ENV_FILE, "utf8").match(/^NEXT_KYC_PAIRWISE_KEY=(.*)$/m)?.[1];
+const nextBackend = process.env.KEY_BACKEND_NEXT ?? process.env.KEY_BACKEND ?? "local";
+const fileVal = (k: string) => readFileSync(ENV_FILE, "utf8").match(new RegExp(`^${k}=(.*)$`, "m"))?.[1];
+const backup = `.env.cutover-${new Date().toISOString().replace(/[:.]/g, "-")}.local`;
+copyFileSync(ENV_FILE, backup);
+if (nextBackend === "local") {
+  const fileNextSigner = fileVal("NEXT_KYC_SIGNER_KEY");
+  const fileNextPairwise = fileVal("NEXT_KYC_PAIRWISE_KEY");
   if (!fileNextSigner || !fileNextPairwise) throw new Error(".env.local 缺少 NEXT_KYC_SIGNER_KEY／NEXT_KYC_PAIRWISE_KEY");
   setEnvLines({ KYC_SIGNER_KEY: fileNextSigner, KYC_PAIRWISE_KEY: fileNextPairwise, NEXT_KYC_SIGNER_KEY: null, NEXT_KYC_PAIRWISE_KEY: null, RETIRED_KYC_SIGNER: oldAddr });
-  console.log(`✓ .env.local 已換成新的簽章金鑰與 pairwise 金鑰（舊檔備份在 ${backup}，確認切換成功後請安全刪除）`);
-} else console.log(`KEY_BACKEND=${process.env.KEY_BACKEND}：請把 KMS 的 current 金鑰指向新的簽章金鑰與 HMAC 金鑰。`);
+} else if (nextBackend === "pkcs11") {
+  const signer = fileVal("PKCS11_NEXT_KYC_SIGNER_LABEL"), pairwise = fileVal("PKCS11_NEXT_PAIRWISE_LABEL");
+  if (!signer || !pairwise) throw new Error(".env.local 缺少 PKCS11_NEXT_KYC_SIGNER_LABEL／PKCS11_NEXT_PAIRWISE_LABEL");
+  // 金鑰全部改由 HSM 提供；.env.local 的明文金鑰移除（備份檔保留，確認後請安全刪除）
+  setEnvLines({
+    KEY_BACKEND: "pkcs11",
+    KEY_BACKEND_NEXT: null,
+    PKCS11_KYC_SIGNER_LABEL: signer,
+    PKCS11_PAIRWISE_LABEL: pairwise,
+    PKCS11_NEXT_KYC_SIGNER_LABEL: null,
+    PKCS11_NEXT_PAIRWISE_LABEL: null,
+    KYC_SIGNER_KEY: null,
+    KYC_PAIRWISE_KEY: null,
+    NEXT_KYC_SIGNER_KEY: null,
+    NEXT_KYC_PAIRWISE_KEY: null,
+    DISCLOSURE_SIGNING_KEY: fileVal("PKCS11_DISCLOSURE_LABEL") ? null : (fileVal("DISCLOSURE_SIGNING_KEY") ?? null),
+    RETIRED_KYC_SIGNER: oldAddr,
+  });
+} else console.log(`KEY_BACKEND=${nextBackend}：請把 KMS 的 current 金鑰指向新的簽章金鑰與 HMAC 金鑰。`);
+console.log(`✓ .env.local 已換成新的簽章金鑰與 pairwise 金鑰（${nextBackend}；舊檔備份在 ${backup}，確認切換成功後請安全刪除）`);
 await writeAudit({ who, action: "signer.cutover.done", old: oldAddr, next: newAddr, pairwiseRotated: true });
 
 const check = await identityState(reattest[0]?.account ?? (oldAddr as Address));

@@ -4,6 +4,7 @@ import { secp256k1 } from "@noble/curves/secp256k1";
 import { p256 } from "@noble/curves/p256";
 import { hashTypedData, recoverAddress, serializeSignature, toHex, type Address, type Hex, type TypedDataDefinition } from "viem";
 import { privateKeyToAccount, publicKeyToAddress } from "viem/accounts";
+import { pkcs11DigestSigner, pkcs11Mac, pkcs11P256 } from "./keys-pkcs11";
 
 /**
  * 伺服器金鑰介面（規格 §16.6 P3-A1）：簽章一律透過這裡，之後改用 KMS／HSM 只需要新增一個實作。
@@ -12,7 +13,7 @@ import { privateKeyToAccount, publicKeyToAddress } from "viem/accounts";
  *   disclosureSigner() P-256：資料調閱資料包的 ES256 JWS
  *   pairwiseMac()      HMAC-SHA256：pairwise_id
  *
- * KEY_BACKEND=local（預設）從 .env.local 讀金鑰；其他值（例如 aws-kms、gcp-kms、pkcs11）在 BACKENDS 註冊。
+ * KEY_BACKEND=local（預設）從 .env.local 讀金鑰；KEY_BACKEND=pkcs11 使用 HSM（keys-pkcs11.ts）；其他實作在 BACKENDS 註冊。
  * KMS 回傳的 secp256k1 簽章通常是 DER 且可能是 high-s，請用 secp256k1FromDer 轉成 OpenZeppelin ECDSA 接受的 65 bytes。
  */
 
@@ -72,19 +73,28 @@ const local: Backend = {
   pairwiseMac: (slot) => localMac(slot === "next" ? "NEXT_KYC_PAIRWISE_KEY" : "KYC_PAIRWISE_KEY"),
 };
 
-/** 新增 KMS／HSM 實作時在這裡註冊（例如 "aws-kms": awsKmsBackend） */
-const BACKENDS: Record<string, Backend> = { local };
+/** PKCS#11 HSM（KEY_BACKEND=pkcs11，見 keys-pkcs11.ts） */
+const pkcs11: Backend = {
+  kycSigner: (slot) => pkcs11DigestSigner(slot === "next" ? "PKCS11_NEXT_KYC_SIGNER_LABEL" : "PKCS11_KYC_SIGNER_LABEL"),
+  disclosureSigner: () => pkcs11P256("PKCS11_DISCLOSURE_LABEL"),
+  pairwiseMac: (slot) => pkcs11Mac(slot === "next" ? "PKCS11_NEXT_PAIRWISE_LABEL" : "PKCS11_PAIRWISE_LABEL"),
+};
 
-function backend(): Backend {
-  const name = process.env.KEY_BACKEND ?? "local";
+/** 新增 KMS／HSM 實作時在這裡註冊（例如 "aws-kms": awsKmsBackend） */
+const BACKENDS: Record<string, Backend> = { local, pkcs11 };
+
+/** current 用 KEY_BACKEND；next（切換時的下一把）可用 KEY_BACKEND_NEXT 指定不同實作，例如從 local 換到 pkcs11 */
+function backend(slot: "current" | "next" = "current"): Backend {
+  const name = (slot === "next" ? process.env.KEY_BACKEND_NEXT : undefined) ?? process.env.KEY_BACKEND ?? "local";
   const b = BACKENDS[name];
   if (!b) throw new Error(`KEY_BACKEND=${name} 尚未實作（可用：${Object.keys(BACKENDS).join("、")}）`);
   return b;
 }
 
-export const kycSigner = (slot: "current" | "next" = "current") => backend().kycSigner(slot);
+export const kycSigner = (slot: "current" | "next" = "current") => backend(slot).kycSigner(slot);
 export const disclosureSigner = () => backend().disclosureSigner();
-export const pairwiseMac = (slot: "current" | "next" = "current") => backend().pairwiseMac(slot);
+export const pairwiseMac = (slot: "current" | "next" = "current") => backend(slot).pairwiseMac(slot);
+export const backendName = (slot: "current" | "next" = "current") => (slot === "next" ? process.env.KEY_BACKEND_NEXT : undefined) ?? process.env.KEY_BACKEND ?? "local";
 
 /** EIP-712 簽章（KycCredential）：先算 digest，再交給簽章者 */
 export async function signTypedDataWith(s: DigestSigner, td: TypedDataDefinition): Promise<Hex> {

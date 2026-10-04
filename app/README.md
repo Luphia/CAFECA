@@ -173,6 +173,16 @@ npm run build
 
 **伺服器金鑰介面（P3-A1）**：KYC 簽章（`Attested`／`Suspended`／`Revoked`、`KycCredential`）、資料包 ES256 簽章與 `pairwise_id` 的 HMAC 一律經過 `src/server/keys.ts`。`KEY_BACKEND=local`（預設）從 `.env.local` 讀金鑰；改用 KMS／HSM 時新增一個實作並在 `BACKENDS` 註冊，其他程式不用改。KMS 回傳的 secp256k1 簽章多半是 DER、可能是 high-s，請用 `secp256k1FromDer` 轉換（OpenZeppelin ECDSA 拒收 high-s）。發卡方、備援金鑰根金鑰、paymaster 等其他金鑰尚未移入這個介面。
 
+**HSM（PKCS#11，P3-A1）**：`KEY_BACKEND=pkcs11` 時，KYC 簽章（secp256k1）、資料包簽章（P-256）與 pairwise HMAC 都在 HSM 內執行，金鑰在 HSM 產生、不可匯出、只能簽章（`src/server/keys-pkcs11.ts`）。設定：
+
+| 變數 | 說明 |
+| --- | --- |
+| `PKCS11_MODULE` | HSM 廠商的 PKCS#11 函式庫路徑（測試用 SoftHSM：`/usr/lib/softhsm/libsofthsm2.so`） |
+| `PKCS11_TOKEN_LABEL`、`PKCS11_PIN` | token（partition）名稱與使用者 PIN |
+| `PKCS11_KYC_SIGNER_LABEL`、`PKCS11_PAIRWISE_LABEL`、`PKCS11_DISCLOSURE_LABEL` | 目前使用的金鑰 label（由 cutover 自動寫入） |
+
+從 `.env.local` 的金鑰換到 HSM：先設好 `PKCS11_MODULE`、`PKCS11_TOKEN_LABEL`、`PKCS11_PIN` 與 `KEY_BACKEND_NEXT=pkcs11`，`npm run cutover -- prepare` 會在 HSM 內產生下一把簽章金鑰、新的 pairwise 金鑰與資料包簽章金鑰，`npm run hsm -- status` 檢查每把金鑰存在、不可匯出並做一次簽章自我測試；之後照下面的切換步驟 `execute`，完成後 `.env.local` 改為 `KEY_BACKEND=pkcs11`，明文金鑰移除（備份檔確認後請安全刪除）。正式模式的上線閘門要求簽章金鑰在 HSM。`pkcs11js` 是 optionalDependency（原生模組，伺服器需要編譯工具），沒有 HSM 的環境安裝失敗也不影響。已用 SoftHSM 完成演練；實體 HSM 請確認廠商支援 secp256k1（`CKM_ECDSA` 搭配 OID 1.3.132.0.10）。
+
 **切換正式 KYC 簽章者（P3-A5）**：
 
 1. `npm run cutover -- prepare`：產生下一把簽章金鑰與新的 pairwise 金鑰（`.env.local` 的 `NEXT_KYC_SIGNER_KEY`、`NEXT_KYC_PAIRWISE_KEY`），印出新簽章者位址。

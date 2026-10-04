@@ -18,7 +18,8 @@
     "rp": "tsx scripts/rp-client.mts",
     "gate": "tsx scripts/launch-gate.mts",
     "cutover": "tsx --conditions react-server scripts/signer-cutover.mts",
-    "multisig": "tsx scripts/multisig.mts"
+    "multisig": "tsx scripts/multisig.mts",
+    "hsm": "tsx --conditions react-server scripts/hsm.mts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0",
@@ -49,5 +50,8 @@
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"
+  },
+  "optionalDependencies": {
+    "pkcs11js": "^2.1.7"
   }
 }
